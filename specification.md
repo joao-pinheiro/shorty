@@ -5,9 +5,9 @@
 Shorty is a self-hosted URL shortener service with a Go REST API backend, React SPA frontend, and SQLite database. It is deployed as a single binary with the frontend embedded.
 
 ### Tech Stack
-- **Backend**: Go 1.22+ (stdlib HTTP router)
+- **Backend**: Go 1.25+ (Echo v4 HTTP framework)
 - **Frontend**: React 18+ / TypeScript / Vite / Tailwind CSS
-- **Database**: SQLite (via `github.com/mattn/go-sqlite3`)
+- **Database**: SQLite (via `modernc.org/sqlite`, pure Go)
 - **Deployment**: Single binary with embedded frontend assets
 
 ---
@@ -30,7 +30,7 @@ shorty/
 │   │   │   ├── bulk.go                # Bulk link creation
 │   │   │   ├── tags.go                # Tag CRUD
 │   │   │   ├── health.go              # Health check
-│   │   │   └── middleware.go           # Auth, rate limit, logging, CORS, recovery
+│   │   │   └── middleware.go           # Auth, rate limit, logging, CORS (Echo middleware)
 │   │   ├── model/
 │   │   │   └── model.go               # Domain structs
 │   │   ├── store/
@@ -98,6 +98,7 @@ SQLite file: `shorty.db`
 | expires_at   | DATETIME | NULL (NULL = never expires)        |
 | is_active    | INTEGER  | NOT NULL DEFAULT 1                 |
 | click_count  | INTEGER  | NOT NULL DEFAULT 0                 |
+| updated_at   | DATETIME | NOT NULL DEFAULT CURRENT_TIMESTAMP |
 
 #### clicks
 
@@ -143,7 +144,8 @@ CREATE TABLE IF NOT EXISTS links (
     created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     expires_at   DATETIME,
     is_active    INTEGER NOT NULL DEFAULT 1,
-    click_count  INTEGER NOT NULL DEFAULT 0
+    click_count  INTEGER NOT NULL DEFAULT 0,
+    updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_links_code ON links(code);
@@ -172,9 +174,18 @@ CREATE TABLE IF NOT EXISTS link_tags (
 );
 
 CREATE INDEX IF NOT EXISTS idx_link_tags_tag_id ON link_tags(tag_id);
+
+CREATE TABLE IF NOT EXISTS schema_version (
+    version INTEGER NOT NULL
+);
+INSERT INTO schema_version (version) VALUES (1);
 ```
 
-### 3.4 SQLite PRAGMAs (set at connection open)
+### 3.4 Migration Versioning
+
+A `schema_version` table tracks the current schema version as a single integer. On startup, the application reads the current version and applies any numbered migration files (`001_init.sql`, `002_*.sql`, etc.) with a version greater than the stored value, in order. Each migration runs in a transaction and updates `schema_version` on success.
+
+### 3.5 SQLite PRAGMAs (set at connection open)
 
 ```sql
 PRAGMA journal_mode=WAL;
@@ -202,7 +213,7 @@ PRAGMA temp_store=MEMORY;
 
 ### Custom Aliases
 - Must match regex: `^[a-zA-Z0-9_-]{3,32}$`
-- Reserved words (rejected): `api`, `health`, `admin`, `static`, `assets`, `favicon.ico`, `robots.txt`, `.well-known`
+- Reserved words (rejected): `api`, `health`, `admin`, `static`, `assets`, `favicon.ico`, `robots.txt`, `.well-known`, `sitemap.xml`, `manifest.json`, `sw.js`, `apple-app-site-association`
 - Collision with existing code returns 409 Conflict
 
 ---
@@ -213,6 +224,7 @@ PRAGMA temp_store=MEMORY;
 - Single API key configured via `API_KEY` environment variable
 - Passed in HTTP header: `Authorization: Bearer <key>`
 - If `API_KEY` is empty/unset, auth is disabled (all endpoints open)
+- Key comparison uses `crypto/subtle.ConstantTimeCompare` to prevent timing attacks
 
 ### Scope
 - **Required**: All `/api/v1/*` endpoints (reads and writes)
@@ -242,8 +254,8 @@ GET /:code
 - Not found → `404 {"error": "not found"}`
 - Found but `is_active = 0` → `410 {"error": "link is deactivated"}`
 - Found but `expires_at < NOW()` → `410 {"error": "link has expired"}` (lazily set `is_active = 0`)
-- Valid → `301` redirect with `Location` header
-- `Cache-Control: private, max-age=0` (preserve analytics accuracy)
+- Valid → `302 Found` redirect with `Location` header (temporary, so deactivation/expiry is respected by browsers that previously visited)
+- `Cache-Control: private, max-age=0`
 - Click recorded asynchronously via buffered channel
 
 ### 6.2 Create Link
@@ -264,7 +276,7 @@ Authorization: Bearer <key>
 }
 ```
 
-All fields except `url` are optional. `expires_in` is seconds from now. `tags` are created if they don't exist.
+All fields except `url` are optional. `expires_in` is seconds from now (maximum 31536000 = 365 days; returns 400 if exceeded). `tags` are created if they don't exist; if any tag name is invalid (fails `^[a-zA-Z0-9_-]{1,50}$`), the entire request fails with 400.
 
 **Response 201**:
 ```json
@@ -277,6 +289,7 @@ All fields except `url` are optional. `expires_in` is seconds from now. `tags` a
   "expires_at": "2026-03-27T10:00:00Z",
   "is_active": true,
   "click_count": 0,
+  "updated_at": "2026-03-26T10:00:00Z",
   "tags": ["marketing", "campaign-q1"]
 }
 ```
@@ -291,6 +304,8 @@ All fields except `url` are optional. `expires_in` is seconds from now. `tags` a
 | Custom code invalid format | 400 | `{"error": "code must be 3-32 alphanumeric, dash, or underscore"}` |
 | Custom code reserved | 400 | `{"error": "code is reserved"}` |
 | Malicious URL detected | 400 | `{"error": "URL flagged as potentially unsafe"}` |
+| Invalid tag name | 400 | `{"error": "invalid tag name: must be 1-50 alphanumeric, dash, or underscore"}` |
+| expires_in too large | 400 | `{"error": "expires_in must not exceed 31536000 seconds (365 days)"}` |
 | Rate limited | 429 | `{"error": "rate limit exceeded", "retry_after": 60}` |
 
 ### 6.3 Bulk Create
@@ -313,12 +328,15 @@ Authorization: Bearer <key>
 ```
 
 - Maximum 50 URLs per request.
-- Processed in a single database transaction.
+- Each URL is processed independently (no wrapping transaction). Individual failures do not affect other items.
 - Response preserves input order.
 
 **Response 200**:
 ```json
 {
+  "total": 3,
+  "succeeded": 2,
+  "failed": 1,
   "results": [
     {"ok": true, "link": {"id": 1, "code": "aB3xYz", "...": "..."}},
     {"ok": true, "link": {"id": 2, "code": "ex2", "...": "..."}},
@@ -326,6 +344,8 @@ Authorization: Bearer <key>
   ]
 }
 ```
+
+Indexes in `results` and `"index"` error fields are 0-based.
 
 ### 6.4 List Links
 
@@ -359,6 +379,7 @@ Authorization: Bearer <key>
       "expires_at": null,
       "is_active": true,
       "click_count": 42,
+      "updated_at": "2026-03-26T10:00:00Z",
       "tags": ["marketing"]
     }
   ],
@@ -375,7 +396,7 @@ GET /api/v1/links/:id
 Authorization: Bearer <key>
 ```
 
-**Response 200**: Same link object as above. **404** if not found.
+**Response 200**: Full link object including `updated_at`. Expired links are returned normally (with `is_active: false` and past `expires_at`) — the management API always returns the resource so it can be inspected and reactivated. **404** if not found.
 
 ### 6.6 Update Link
 
@@ -453,6 +474,14 @@ Authorization: Bearer <key>
 - Generated on the fly
 - **404** if link not found
 
+A public route is also available:
+
+```
+GET /:code/qr?size=256
+```
+
+**Auth**: No. Returns the QR code for the short URL without requiring an API key. Handled by the routing middleware (see S14.5).
+
 ### 6.10 List Tags
 
 ```
@@ -485,7 +514,7 @@ Authorization: Bearer <key>
 }
 ```
 
-Tag name must match `^[a-zA-Z0-9_-]{1,50}$`. **Response 201**. **409** if name already exists.
+Tag name must match `^[a-zA-Z0-9_-]{1,50}$`. Maximum 100 tags allowed; returns `400 {"error": "tag limit reached (max 100)"}` when exceeded. **Response 201**. **409** if name already exists.
 
 ### 6.12 Delete Tag
 
@@ -530,7 +559,7 @@ Multi-layer validation in `urlcheck` package:
 
 ### 8.1 Rate Limiting
 
-Token bucket per IP using `golang.org/x/time/rate`. Implemented in middleware with `sync.Map`.
+Token bucket per IP using Echo's built-in rate limiter middleware (`echo.middleware.RateLimiter`) or `golang.org/x/time/rate` wrapped in Echo middleware.
 
 | Endpoint | Rate | Burst |
 |----------|------|-------|
@@ -546,7 +575,11 @@ Response headers on every request:
 - `X-RateLimit-Remaining`
 - `X-RateLimit-Reset` (Unix timestamp)
 
-### 8.2 Input Sanitization
+### 8.2 Request Body Limit
+
+Echo `BodyLimit` middleware is configured at 1MB globally. Any request body exceeding this limit returns `413 {"error": "request body too large"}`.
+
+### 8.3 Input Sanitization
 
 - All user input trimmed of whitespace
 - URLs: strip trailing whitespace, normalize scheme to lowercase
@@ -554,9 +587,9 @@ Response headers on every request:
 - SQL injection prevented by parameterized queries only (no string interpolation)
 - All API responses have `Content-Type: application/json`
 
-### 8.3 CORS
+### 8.4 CORS
 
-Configurable via `CORS_ALLOWED_ORIGINS` env var (comma-separated). Defaults to `http://localhost:5173`.
+Configured via Echo's built-in CORS middleware (`echo.middleware.CORSWithConfig`). Allowed origins set via `CORS_ALLOWED_ORIGINS` env var (comma-separated), defaults to `http://localhost:5173`.
 
 Headers:
 - `Access-Control-Allow-Origin`
@@ -564,7 +597,7 @@ Headers:
 - `Access-Control-Allow-Headers: Content-Type, Authorization`
 - `Access-Control-Max-Age: 86400`
 
-### 8.4 Security Headers
+### 8.5 Security Headers
 
 All responses:
 - `X-Content-Type-Options: nosniff`
@@ -600,9 +633,23 @@ Redirect handler sends click data to a buffered channel (capacity configurable, 
 
 ---
 
-## 10. Configuration
+## 10. Graceful Shutdown
 
-All via environment variables with sensible defaults.
+On receiving `SIGINT` or `SIGTERM`:
+
+1. Stop accepting new HTTP connections
+2. Wait up to 10 seconds for in-flight requests to complete
+3. Drain the click recording channel and flush any remaining batch to the database
+4. Close database connections
+5. Exit with code 0
+
+If the drain timeout expires, log a warning with the number of dropped in-flight requests and exit with code 1.
+
+---
+
+## 11. Configuration
+
+All via environment variables with sensible defaults. If a `.env` file exists in the working directory, it is loaded on startup (env vars take precedence over `.env` values).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -615,16 +662,16 @@ All via environment variables with sensible defaults.
 | `DEFAULT_CODE_LENGTH` | `6` | Generated short code length |
 | `MAX_BULK_URLS` | `50` | Max URLs in bulk endpoint |
 | `CLICK_BUFFER_SIZE` | `10000` | Async click channel buffer capacity |
-| `CLICK_FLUSH_INTERVAL` | `1s` | Batch insert interval for clicks |
+| `CLICK_FLUSH_INTERVAL` | `1` | Batch insert interval for clicks (integer seconds) |
 | `RATE_LIMIT_ENABLED` | `true` | Toggle rate limiting on/off |
 | `GOOGLE_SAFE_BROWSING_API_KEY` | (empty) | Enable safe browsing URL checks |
 | `DATA_RETENTION_DAYS` | `0` | Days to keep click data (0 = forever) |
 
 ---
 
-## 11. Logging
+## 12. Logging
 
-Structured JSON logging via Go stdlib `log/slog`.
+Structured JSON logging via Go stdlib `log/slog`. Echo's request logger middleware is configured to emit via `slog`.
 
 Request logging middleware emits per request:
 ```json
@@ -633,7 +680,7 @@ Request logging middleware emits per request:
   "msg": "request",
   "method": "GET",
   "path": "/aB3xYz",
-  "status": 301,
+  "status": 302,
   "duration_ms": 2.3,
   "ip": "192.168.1.1"
 }
@@ -641,7 +688,7 @@ Request logging middleware emits per request:
 
 ---
 
-## 12. Error Handling
+## 13. Error Handling
 
 All errors return consistent JSON:
 
@@ -654,6 +701,7 @@ All errors return consistent JSON:
 | Status | Meaning |
 |--------|---------|
 | 400 | Validation error |
+| 413 | Request body too large |
 | 401 | Missing or invalid API key |
 | 404 | Resource not found |
 | 409 | Conflict (duplicate code or tag) |
@@ -661,19 +709,21 @@ All errors return consistent JSON:
 | 429 | Rate limited (includes `Retry-After` header) |
 | 500 | Internal error (generic message to client, full error logged) |
 
-A `recovery` middleware catches panics, logs the stack trace, and returns 500.
+Echo's built-in `Recover` middleware catches panics, logs the stack trace, and returns 500.
 
 ---
 
-## 13. Data Retention
+## 14. Data Retention
 
 If `DATA_RETENTION_DAYS > 0`, a background goroutine runs daily at midnight UTC and deletes rows from `clicks` where `clicked_at < NOW() - retention_days`. The `click_count` on `links` is NOT decremented (it represents lifetime total).
 
+**Note**: `click_count` is a best-effort lifetime counter. It may slightly drift from the actual `clicks` row count in edge cases (process crash during batch insert, retention purging old rows). If exact counts are needed, query `SELECT COUNT(*) FROM clicks WHERE link_id = ?`.
+
 ---
 
-## 14. Frontend
+## 15. Frontend
 
-### 14.1 Tech Stack
+### 15.1 Tech Stack
 
 - React 18+ with TypeScript
 - Vite for build/dev
@@ -681,10 +731,10 @@ If `DATA_RETENTION_DAYS > 0`, a background goroutine runs daily at midnight UTC 
 - React Router (only `/` dashboard + 404)
 - `date-fns` for date formatting
 
-### 14.2 Pages
+### 15.2 Pages
 
 **Dashboard (`/`)**:
-- **Shorten form** at top: URL input, optional custom code input, optional expiration dropdown, optional tag multi-select
+- **Shorten form** at top: URL input, optional custom code input, optional expiration dropdown (presets: Never, 1 hour, 1 day, 7 days, 30 days, Custom date picker), optional tag multi-select
 - **Result display**: short URL with copy button shown after creation
 - **Link table**: columns — Short URL, Original URL (truncated), Created, Clicks, Tags, Status, Actions
 - **Actions per row**: Copy, QR Code, Analytics expand, Activate/Deactivate, Delete
@@ -708,14 +758,14 @@ If `DATA_RETENTION_DAYS > 0`, a background goroutine runs daily at midnight UTC 
 - List all tags with link counts
 - Create / delete tags
 
-### 14.3 API Key Handling
+### 15.3 API Key Handling
 
 - On first visit, if API returns 401, prompt user for API key
 - Store in `localStorage`
 - Include in all API requests as `Authorization: Bearer <key>`
 - Option to clear/change key in UI
 
-### 14.4 API Client
+### 15.4 API Client
 
 `src/api/client.ts`:
 
@@ -735,26 +785,31 @@ deleteTag(id: number): Promise<void>
 
 Base URL from `VITE_API_URL` env var, default `http://localhost:8080`.
 
-### 14.5 Production Serving
+### 15.5 Production Serving
 
 `npm run build` produces `frontend/dist/`. The Go backend embeds this directory using `embed.FS` and serves it via `http.FileServer`.
 
-**Route priority in Go mux**:
-1. `/api/*` — API handlers
-2. Static file match in embedded `frontend/dist/` (JS, CSS, images)
-3. `/:code` — redirect handler (if code exists in DB)
-4. Fallback — serve `index.html` (SPA client-side routing)
+**Routing strategy**: A catch-all middleware handles all non-`/api/*` requests using the following chain:
+
+1. `/api/*` — API handlers (registered as explicit Echo routes, matched first)
+2. For all other paths, the middleware checks in order:
+   a. If the path matches a static file in embedded `frontend/dist/` (JS, CSS, images) — serve it
+   b. If the path matches `/:code/qr` — serve QR code for the short code
+   c. If the path matches a short code in the DB — `302` redirect
+   d. Otherwise — serve `index.html` (SPA client-side routing)
+
+This avoids Echo wildcard route conflicts. The middleware is a single `echo.MiddlewareFunc` registered after all `/api/*` routes.
 
 ---
 
-## 15. Testing
+## 16. Testing
 
-### 15.1 Backend (Go)
+### 16.1 Backend (Go)
 
 **Unit tests**:
 - `shortcode`: generation, charset, length, uniqueness over N iterations
 - `urlcheck`: valid URLs, invalid schemes, private IPs, too-long URLs
-- `handler`: each handler with `httptest.NewRecorder` and mock store (interface-based)
+- `handler`: each handler with `echo.NewContext` test helpers and mock store (interface-based)
 - `store`: tested against real in-memory SQLite (`:memory:`)
 
 **Integration tests**:
@@ -766,22 +821,22 @@ Base URL from `VITE_API_URL` env var, default `http://localhost:8080`.
 go test ./... -race -count=1
 ```
 
-### 15.2 Frontend
+### 16.2 Frontend
 
 - Vitest for unit tests
 - React Testing Library for component tests
 - MSW (Mock Service Worker) for API mocking
 - Key tests: form submission, link table rendering, copy button, error states, tag management
 
-### 15.3 Coverage
+### 16.3 Coverage
 
 80% line coverage target for backend. All user-facing flows covered for frontend.
 
 ---
 
-## 16. Build and Deploy
+## 17. Build and Deploy
 
-### 16.1 Makefile
+### 17.1 Makefile
 
 ```makefile
 dev-backend:     go run ./backend/cmd/shorty
@@ -796,37 +851,39 @@ lint:            golangci-lint run ./backend/... && cd frontend && npm run lint
 migrate:         go run ./backend/cmd/shorty -migrate
 ```
 
-### 16.2 Docker
+### 17.2 Docker
 
 Multi-stage Dockerfile:
 1. **Stage 1** (Node): Build frontend → `frontend/dist/`
-2. **Stage 2** (Go): Build backend with embedded frontend → single binary
-3. **Stage 3** (`gcr.io/distroless/static-debian12`): Copy binary only
+2. **Stage 2** (Go): Build backend with `CGO_ENABLED=0` and embedded frontend → single static binary
+3. **Stage 3** (`gcr.io/distroless/static-debian12`): Copy binary only (no libc needed thanks to pure Go SQLite driver)
 
-### 16.3 docker-compose.yml
+### 17.3 docker-compose.yml
 
 Single service with volume for SQLite persistence and environment variables.
 
 ---
 
-## 17. Go Dependencies
+## 18. Go Dependencies
 
 ```
-github.com/mattn/go-sqlite3          # SQLite driver (CGo)
+github.com/labstack/echo/v4          # HTTP framework (routing, middleware, context)
+modernc.org/sqlite                   # SQLite driver (pure Go, no CGo)
 golang.org/x/time/rate               # Rate limiter
 github.com/skip2/go-qrcode           # QR code generation
+github.com/joho/godotenv             # .env file loading
 ```
 
-HTTP routing via Go 1.22+ stdlib `http.ServeMux` (supports method and path parameter matching).
+HTTP routing, middleware (CORS, recover, request logging, body limit), and request context handled by Echo v4. Pure Go SQLite driver enables `CGO_ENABLED=0` builds and simpler cross-compilation.
 
 ---
 
-## 18. Edge Cases
+## 19. Edge Cases
 
 | Case | Decision |
 |------|----------|
 | Same URL shortened twice | Creates separate short codes (no dedup). Avoids leaking that a URL was already shortened. |
-| Redirect loop (short URL → another short URL on same instance) | Allowed. Single 301 hop; browser follows chain. |
+| Redirect loop (short URL → another short URL on same instance) | Allowed. Single 302 hop; browser follows chain. |
 | Unicode in URLs | Accepted. Go `url.Parse` handles percent-encoding. |
 | Trailing slash on short code | `/aB3xYz/` treated same as `/aB3xYz` (strip in middleware). |
 | Empty DB on first run | Migration runs automatically on startup. |
@@ -837,7 +894,7 @@ HTTP routing via Go 1.22+ stdlib `http.ServeMux` (supports method and path param
 
 ---
 
-## 19. Out of Scope (v1)
+## 20. Out of Scope (v1)
 
 - Multi-user authentication / user registration
 - API keys per user
