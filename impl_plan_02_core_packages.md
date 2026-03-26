@@ -198,6 +198,7 @@ Multi-layer URL validation with SSRF prevention (S7).
 package urlcheck
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/url"

@@ -80,8 +80,7 @@ FROM gcr.io/distroless/static-debian12
 # Copy the static binary
 COPY --from=backend-builder /shorty /shorty
 
-# Copy migrations (needed at runtime for auto-migration on startup)
-COPY --from=backend-builder /app/backend/migrations /migrations
+# Migrations are embedded in the binary via embed.FS — no separate copy needed
 
 # SQLite data directory with correct ownership for nonroot user.
 # Distroless has no shell/mkdir, so we must create /data in a builder stage.

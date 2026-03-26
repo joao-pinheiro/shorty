@@ -155,6 +155,17 @@ func (fh *FrontendHandler) ServeIndex(c echo.Context) error {
 
 This is the core routing logic from S15.5. It's registered as an Echo middleware **after** all `/api/*` routes so those take priority.
 
+### RateLimiter Interface
+
+```go
+// RateLimiter wraps the per-IP token bucket from Phase 3's rate limit middleware.
+// Allow(ip) checks if the request should be permitted under the redirect rate limit
+// (100/min, burst 200).
+type RateLimiter interface {
+	Allow(ip string) bool
+}
+```
+
 ### Function Signature
 
 ```go
@@ -280,9 +291,12 @@ func CatchAllMiddleware(
 					})
 				}
 
-				// Record click asynchronously (send to click channel — done in redirect handler from Phase 5)
-				// The click recorder channel is injected here or the redirect handler is called
-				recordClick(link.ID)
+				// Non-blocking send to click channel
+				select {
+				case clickChan <- clickrecorder.ClickEvent{LinkID: link.ID, ClickedAt: time.Now()}:
+				default:
+					slog.Warn("click buffer full, dropping click")
+				}
 
 				// Security headers for redirect (S8.5)
 				c.Response().Header().Set("X-Frame-Options", "DENY")

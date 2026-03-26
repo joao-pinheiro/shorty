@@ -74,7 +74,7 @@ import (
 // newTestStore creates a fresh in-memory SQLite store with migrations applied.
 func newTestStore(t *testing.T) *SQLiteStore {
 	t.Helper()
-	s, err := NewSQLiteStore(":memory:")
+	s, err := New(":memory:", migrationsFS)
 	if err != nil {
 		t.Fatalf("failed to create test store: %v", err)
 	}
@@ -209,34 +209,110 @@ Handler tests use `echo.NewContext` with a mock store to test HTTP-level behavio
 package store
 
 type MockStore struct {
-	CreateLinkFn           func(ctx context.Context, url, code string, expiresAt *time.Time) (model.Link, error)
-	GetLinkByCodeFn        func(ctx context.Context, code string) (model.Link, error)
-	GetLinkByIDFn          func(ctx context.Context, id int64) (model.Link, error)
-	ListLinksFn            func(ctx context.Context, params ListParams) ([]model.Link, int, error)
-	UpdateLinkFn           func(ctx context.Context, id int64, patch model.LinkPatch) (model.Link, error)
-	DeleteLinkFn           func(ctx context.Context, id int64) error
+	// Links
+	CreateLinkFn           func(ctx context.Context, code, originalURL string, expiresAt *string) (*model.Link, error)
+	GetLinkByCodeFn        func(ctx context.Context, code string) (*model.Link, error)
+	GetLinkByIDFn          func(ctx context.Context, id int64) (*model.Link, error)
+	ListLinksFn            func(ctx context.Context, params ListParams) (*ListResult, error)
+	UpdateLinkFn           func(ctx context.Context, id int64, isActive *bool, expiresAt *string) (*model.Link, error)
 	DeactivateExpiredLinkFn func(ctx context.Context, id int64) error
-	CreateTagFn            func(ctx context.Context, name string) (model.Tag, error)
+	DeleteLinkFn           func(ctx context.Context, id int64) error
+	CodeExistsFn           func(ctx context.Context, code string) (bool, error)
+
+	// Clicks
+	BatchInsertClicksFn    func(ctx context.Context, events []ClickEvent) error
+
+	// Tags
+	CreateTagFn            func(ctx context.Context, name string) (*model.Tag, error)
 	ListTagsFn             func(ctx context.Context) ([]model.TagWithCount, error)
+	TagCountFn             func(ctx context.Context) (int, error)
+	GetTagByIDFn           func(ctx context.Context, id int64) (*model.Tag, error)
 	DeleteTagFn            func(ctx context.Context, id int64) error
-	SetLinkTagsFn          func(ctx context.Context, linkID int64, tags []string) error
+	SetLinkTagsFn          func(ctx context.Context, linkID int64, tagNames []string) error
 	GetLinkTagsFn          func(ctx context.Context, linkID int64) ([]string, error)
-	GetLinksTagsBatchFn    func(ctx context.Context, ids []int64) (map[int64][]string, error)
-	BatchInsertClicksFn    func(ctx context.Context, clicks []model.Click) error
-	GetClicksByDayFn       func(ctx context.Context, linkID int64, since time.Time) ([]model.DayCount, error)
-	GetClicksByHourFn      func(ctx context.Context, linkID int64, since time.Time) ([]model.HourCount, error)
-	GetPeriodClickCountFn       func(ctx context.Context, linkID int64, since time.Time) (int, error)
-	DeleteClicksOlderThanFn     func(ctx context.Context, before time.Time) (int64, error)
+	GetLinksTagsBatchFn    func(ctx context.Context, linkIDs []int64) (map[int64][]string, error)
+
+	// Analytics
+	GetClicksByDayFn       func(ctx context.Context, linkID int64, since string) ([]model.DayCount, error)
+	GetClicksByHourFn      func(ctx context.Context, linkID int64, since string) ([]model.HourCount, error)
+	GetPeriodClickCountFn  func(ctx context.Context, linkID int64, since string) (int, error)
+
+	// Retention
+	DeleteClicksOlderThanFn func(ctx context.Context, before time.Time) (int64, error)
+
+	// Lifecycle
+	CloseFn                func() error
 }
 
 // Each method delegates to the corresponding Fn field. Nil Fn panics (test setup error).
-func (m *MockStore) CreateLink(ctx context.Context, url, code string, expiresAt *time.Time) (model.Link, error) {
-	return m.CreateLinkFn(ctx, url, code, expiresAt)
+func (m *MockStore) CreateLink(ctx context.Context, code, originalURL string, expiresAt *string) (*model.Link, error) {
+	return m.CreateLinkFn(ctx, code, originalURL, expiresAt)
 }
-// ... repeat for all methods
-
+func (m *MockStore) GetLinkByCode(ctx context.Context, code string) (*model.Link, error) {
+	return m.GetLinkByCodeFn(ctx, code)
+}
+func (m *MockStore) GetLinkByID(ctx context.Context, id int64) (*model.Link, error) {
+	return m.GetLinkByIDFn(ctx, id)
+}
+func (m *MockStore) ListLinks(ctx context.Context, params ListParams) (*ListResult, error) {
+	return m.ListLinksFn(ctx, params)
+}
+func (m *MockStore) UpdateLink(ctx context.Context, id int64, isActive *bool, expiresAt *string) (*model.Link, error) {
+	return m.UpdateLinkFn(ctx, id, isActive, expiresAt)
+}
+func (m *MockStore) DeactivateExpiredLink(ctx context.Context, id int64) error {
+	return m.DeactivateExpiredLinkFn(ctx, id)
+}
+func (m *MockStore) DeleteLink(ctx context.Context, id int64) error {
+	return m.DeleteLinkFn(ctx, id)
+}
+func (m *MockStore) CodeExists(ctx context.Context, code string) (bool, error) {
+	return m.CodeExistsFn(ctx, code)
+}
+func (m *MockStore) BatchInsertClicks(ctx context.Context, events []ClickEvent) error {
+	return m.BatchInsertClicksFn(ctx, events)
+}
+func (m *MockStore) CreateTag(ctx context.Context, name string) (*model.Tag, error) {
+	return m.CreateTagFn(ctx, name)
+}
+func (m *MockStore) ListTags(ctx context.Context) ([]model.TagWithCount, error) {
+	return m.ListTagsFn(ctx)
+}
+func (m *MockStore) TagCount(ctx context.Context) (int, error) {
+	return m.TagCountFn(ctx)
+}
+func (m *MockStore) GetTagByID(ctx context.Context, id int64) (*model.Tag, error) {
+	return m.GetTagByIDFn(ctx, id)
+}
+func (m *MockStore) DeleteTag(ctx context.Context, id int64) error {
+	return m.DeleteTagFn(ctx, id)
+}
+func (m *MockStore) SetLinkTags(ctx context.Context, linkID int64, tagNames []string) error {
+	return m.SetLinkTagsFn(ctx, linkID, tagNames)
+}
+func (m *MockStore) GetLinkTags(ctx context.Context, linkID int64) ([]string, error) {
+	return m.GetLinkTagsFn(ctx, linkID)
+}
+func (m *MockStore) GetLinksTagsBatch(ctx context.Context, linkIDs []int64) (map[int64][]string, error) {
+	return m.GetLinksTagsBatchFn(ctx, linkIDs)
+}
+func (m *MockStore) GetClicksByDay(ctx context.Context, linkID int64, since string) ([]model.DayCount, error) {
+	return m.GetClicksByDayFn(ctx, linkID, since)
+}
+func (m *MockStore) GetClicksByHour(ctx context.Context, linkID int64, since string) ([]model.HourCount, error) {
+	return m.GetClicksByHourFn(ctx, linkID, since)
+}
+func (m *MockStore) GetPeriodClickCount(ctx context.Context, linkID int64, since string) (int, error) {
+	return m.GetPeriodClickCountFn(ctx, linkID, since)
+}
 func (m *MockStore) DeleteClicksOlderThan(ctx context.Context, before time.Time) (int64, error) {
 	return m.DeleteClicksOlderThanFn(ctx, before)
+}
+func (m *MockStore) Close() error {
+	if m.CloseFn != nil {
+		return m.CloseFn()
+	}
+	return nil
 }
 ```
 
@@ -530,7 +606,7 @@ func newTestServer(t *testing.T) *testServer {
 	t.Helper()
 
 	apiKey := "test-api-key"
-	s, err := store.NewSQLiteStore(":memory:")
+	s, err := store.New(":memory:", migrationsFS)
 	if err != nil {
 		t.Fatal(err)
 	}

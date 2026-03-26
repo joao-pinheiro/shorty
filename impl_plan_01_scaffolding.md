@@ -142,6 +142,16 @@ type TagWithCount struct {
 	CreatedAt time.Time `json:"created_at"`
 	LinkCount int64     `json:"link_count"`
 }
+
+type DayCount struct {
+	Date  string `json:"date"`
+	Count int64  `json:"count"`
+}
+
+type HourCount struct {
+	Hour  string `json:"hour"`
+	Count int64  `json:"count"`
+}
 ```
 
 ### Notes
@@ -222,6 +232,7 @@ package store
 
 import (
 	"context"
+	"time"
 
 	"shorty/internal/model"
 )
@@ -266,6 +277,8 @@ type Store interface {
 	// Tags
 	CreateTag(ctx context.Context, name string) (*model.Tag, error)
 	ListTags(ctx context.Context) ([]model.TagWithCount, error)
+	TagCount(ctx context.Context) (int, error)
+	GetTagByID(ctx context.Context, id int64) (*model.Tag, error)
 	DeleteTag(ctx context.Context, id int64) error
 	SetLinkTags(ctx context.Context, linkID int64, tagNames []string) error
 	GetLinkTags(ctx context.Context, linkID int64) ([]string, error)
@@ -277,7 +290,7 @@ type Store interface {
 	GetPeriodClickCount(ctx context.Context, linkID int64, since string) (int, error)
 
 	// Retention
-	DeleteOldClicks(ctx context.Context, beforeDays int) (int64, error)
+	DeleteClicksOlderThan(ctx context.Context, before time.Time) (int64, error)
 
 	// Lifecycle
 	Close() error
