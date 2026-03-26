@@ -19,6 +19,7 @@ import (
 	"shorty/internal/config"
 	"shorty/internal/handler"
 	"shorty/internal/migrations"
+	"shorty/internal/retention"
 	"shorty/internal/store"
 )
 
@@ -131,6 +132,9 @@ func main() {
 	// Create handlers
 	linkHandler := handler.NewLinkHandler(db, cfg)
 	redirectHandler := handler.NewRedirectHandler(db, recorder)
+	tagHandler := handler.NewTagHandler(db)
+	bulkHandler := handler.NewBulkHandler(db, cfg)
+	analyticsHandler := handler.NewAnalyticsHandler(db)
 
 	// Public routes — no auth required
 	e.GET("/api/health", handler.HealthCheck)
@@ -140,6 +144,8 @@ func main() {
 
 	apiV1.POST("/links", linkHandler.Create,
 		handler.RateLimitMiddleware(createLinkLimiter, cfg.RateLimitEnabled))
+	apiV1.POST("/links/bulk", bulkHandler.Create,
+		handler.RateLimitMiddleware(bulkCreateLimiter, cfg.RateLimitEnabled))
 	apiV1.GET("/links", linkHandler.List,
 		handler.RateLimitMiddleware(defaultLimiter, cfg.RateLimitEnabled))
 	apiV1.GET("/links/:id", linkHandler.Get,
@@ -148,13 +154,27 @@ func main() {
 		handler.RateLimitMiddleware(defaultLimiter, cfg.RateLimitEnabled))
 	apiV1.DELETE("/links/:id", linkHandler.Delete,
 		handler.RateLimitMiddleware(defaultLimiter, cfg.RateLimitEnabled))
+	apiV1.GET("/links/:id/analytics", analyticsHandler.Get,
+		handler.RateLimitMiddleware(defaultLimiter, cfg.RateLimitEnabled))
+	apiV1.GET("/links/:id/qr", linkHandler.QRCode,
+		handler.RateLimitMiddleware(defaultLimiter, cfg.RateLimitEnabled))
 
-	// Suppress unused variable — will be used in later phases
-	_ = bulkCreateLimiter
+	apiV1.GET("/tags", tagHandler.List,
+		handler.RateLimitMiddleware(defaultLimiter, cfg.RateLimitEnabled))
+	apiV1.POST("/tags", tagHandler.Create,
+		handler.RateLimitMiddleware(defaultLimiter, cfg.RateLimitEnabled))
+	apiV1.DELETE("/tags/:id", tagHandler.Delete,
+		handler.RateLimitMiddleware(defaultLimiter, cfg.RateLimitEnabled))
 
 	// Redirect route (no auth, rate limited)
 	e.GET("/:code", redirectHandler.Redirect,
 		handler.RateLimitMiddleware(redirectLimiter, cfg.RateLimitEnabled))
+
+	// Start data retention goroutine if configured
+	retentionRunner := retention.New(db, cfg.DataRetentionDays, slog.Default())
+	if retentionRunner != nil {
+		retentionRunner.Start()
+	}
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	slog.Info("starting server", "addr", addr, "base_url", cfg.BaseURL)
@@ -197,6 +217,11 @@ func main() {
 	case <-time.After(5 * time.Second):
 		slog.Warn("click buffer drain timed out")
 		os.Exit(1)
+	}
+
+	// 3.5. Stop retention goroutine
+	if retentionRunner != nil {
+		retentionRunner.Stop()
 	}
 
 	// 4. Close database connections (S10 step 4)

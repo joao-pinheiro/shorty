@@ -12,6 +12,7 @@ import (
 
 	"shorty/internal/config"
 	"shorty/internal/model"
+	"shorty/internal/qr"
 	"shorty/internal/shortcode"
 	"shorty/internal/store"
 	"shorty/internal/urlcheck"
@@ -27,14 +28,16 @@ func NewLinkHandler(s store.Store, cfg *config.Config) *LinkHandler {
 }
 
 type CreateLinkRequest struct {
-	URL        string `json:"url"`
-	CustomCode string `json:"custom_code,omitempty"`
-	ExpiresIn  *int   `json:"expires_in,omitempty"`
+	URL        string   `json:"url"`
+	CustomCode string   `json:"custom_code,omitempty"`
+	ExpiresIn  *int     `json:"expires_in,omitempty"`
+	Tags       []string `json:"tags,omitempty"`
 }
 
 type UpdateLinkRequest struct {
-	IsActive  *bool   `json:"is_active,omitempty"`
-	ExpiresAt *string `json:"expires_at,omitempty"`
+	IsActive  *bool     `json:"is_active,omitempty"`
+	ExpiresAt *string   `json:"expires_at,omitempty"`
+	Tags      *[]string `json:"tags,omitempty"`
 }
 
 func (h *LinkHandler) Create(c echo.Context) error {
@@ -48,6 +51,21 @@ func (h *LinkHandler) Create(c echo.Context) error {
 
 	if err := urlcheck.Validate(req.URL); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+
+	// Validate and trim tag names before creating the link
+	var trimmedTags []string
+	if len(req.Tags) > 0 {
+		trimmedTags = make([]string, 0, len(req.Tags))
+		for _, name := range req.Tags {
+			trimmed := strings.TrimSpace(name)
+			if !validateTagName(trimmed) {
+				return c.JSON(http.StatusBadRequest, map[string]string{
+					"error": "invalid tag name: must be 1-50 alphanumeric, dash, or underscore",
+				})
+			}
+			trimmedTags = append(trimmedTags, trimmed)
+		}
 	}
 
 	var expiresAt *string
@@ -94,6 +112,14 @@ func (h *LinkHandler) Create(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal server error"})
 	}
 
+	if len(trimmedTags) > 0 {
+		if err := h.store.SetLinkTags(c.Request().Context(), link.ID, trimmedTags); err != nil {
+			slog.Error("set link tags failed", "error", err)
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal server error"})
+		}
+		link.Tags = trimmedTags
+	}
+
 	link.ShortURL = h.config.BaseURL + "/" + link.Code
 	if link.Tags == nil {
 		link.Tags = []string{}
@@ -138,8 +164,20 @@ func (h *LinkHandler) List(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal server error"})
 	}
 
+	// Batch load tags for all links
+	ids := make([]int64, len(result.Links))
+	for i, l := range result.Links {
+		ids[i] = l.ID
+	}
+	tagMap, err := h.store.GetLinksTagsBatch(c.Request().Context(), ids)
+	if err != nil {
+		slog.Error("batch load tags failed", "error", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal server error"})
+	}
+
 	for i := range result.Links {
 		result.Links[i].ShortURL = h.config.BaseURL + "/" + result.Links[i].Code
+		result.Links[i].Tags = tagMap[result.Links[i].ID]
 		if result.Links[i].Tags == nil {
 			result.Links[i].Tags = []string{}
 		}
@@ -172,6 +210,13 @@ func (h *LinkHandler) Get(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal server error"})
 	}
 
+	tags, err := h.store.GetLinkTags(c.Request().Context(), link.ID)
+	if err != nil {
+		slog.Error("get link tags failed", "error", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal server error"})
+	}
+	link.Tags = tags
+
 	link.ShortURL = h.config.BaseURL + "/" + link.Code
 	if link.Tags == nil {
 		link.Tags = []string{}
@@ -197,6 +242,19 @@ func (h *LinkHandler) Update(c echo.Context) error {
 		}
 	}
 
+	// Validate tag names if provided
+	if req.Tags != nil {
+		for i, name := range *req.Tags {
+			trimmed := strings.TrimSpace(name)
+			(*req.Tags)[i] = trimmed
+			if !validateTagName(trimmed) {
+				return c.JSON(http.StatusBadRequest, map[string]string{
+					"error": "invalid tag name: must be 1-50 alphanumeric, dash, or underscore",
+				})
+			}
+		}
+	}
+
 	link, err := h.store.UpdateLink(c.Request().Context(), id, req.IsActive, req.ExpiresAt)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -205,6 +263,21 @@ func (h *LinkHandler) Update(c echo.Context) error {
 		slog.Error("update link failed", "error", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal server error"})
 	}
+
+	if req.Tags != nil {
+		if err := h.store.SetLinkTags(c.Request().Context(), id, *req.Tags); err != nil {
+			slog.Error("set link tags failed", "error", err)
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal server error"})
+		}
+	}
+
+	// Fetch current tags
+	tags, err := h.store.GetLinkTags(c.Request().Context(), link.ID)
+	if err != nil {
+		slog.Error("get link tags failed", "error", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal server error"})
+	}
+	link.Tags = tags
 
 	link.ShortURL = h.config.BaseURL + "/" + link.Code
 	if link.Tags == nil {
@@ -230,4 +303,44 @@ func (h *LinkHandler) Delete(c echo.Context) error {
 	}
 
 	return c.NoContent(http.StatusNoContent)
+}
+
+func (h *LinkHandler) QRCode(c echo.Context) error {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid link ID"})
+	}
+
+	ctx := c.Request().Context()
+	link, err := h.store.GetLinkByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return c.JSON(http.StatusNotFound, map[string]string{"error": "not found"})
+		}
+		slog.Error("qr get link failed", "error", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal server error"})
+	}
+
+	size := 256
+	if s := c.QueryParam("size"); s != "" {
+		parsed, err := strconv.Atoi(s)
+		if err == nil {
+			size = parsed
+		}
+	}
+	if size < 128 {
+		size = 128
+	}
+	if size > 1024 {
+		size = 1024
+	}
+
+	shortURL := h.config.BaseURL + "/" + link.Code
+	png, err := qr.Generate(shortURL, size)
+	if err != nil {
+		slog.Error("qr generation failed", "error", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal server error"})
+	}
+
+	return c.Blob(http.StatusOK, "image/png", png)
 }

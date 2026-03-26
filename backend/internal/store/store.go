@@ -8,7 +8,11 @@ import (
 	"shorty/internal/model"
 )
 
-var ErrNotFound = errors.New("not found")
+var (
+	ErrNotFound    = errors.New("not found")
+	ErrTagExists   = errors.New("tag already exists")
+	ErrTagNotFound = errors.New("tag not found")
+)
 
 type ListParams struct {
 	Page    int
