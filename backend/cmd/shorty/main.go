@@ -23,10 +23,31 @@ import (
 	"shorty/internal/store"
 )
 
-var migrateOnly = flag.Bool("migrate", false, "Run migrations and exit")
+var (
+	migrateOnly = flag.Bool("migrate", false, "Run migrations and exit")
+	healthcheck = flag.Bool("healthcheck", false, "Run health check and exit")
+)
 
 func main() {
 	flag.Parse()
+
+	if *healthcheck {
+		port := os.Getenv("PORT")
+		if port == "" {
+			port = "8080"
+		}
+		resp, err := http.Get(fmt.Sprintf("http://localhost:%s/api/health", port))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "health check failed: %v\n", err)
+			os.Exit(1)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			fmt.Fprintf(os.Stderr, "health check returned status %d\n", resp.StatusCode)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -131,7 +152,6 @@ func main() {
 
 	// Create handlers
 	linkHandler := handler.NewLinkHandler(db, cfg)
-	redirectHandler := handler.NewRedirectHandler(db, recorder)
 	tagHandler := handler.NewTagHandler(db)
 	bulkHandler := handler.NewBulkHandler(db, cfg)
 	analyticsHandler := handler.NewAnalyticsHandler(db)
@@ -166,9 +186,22 @@ func main() {
 	apiV1.DELETE("/tags/:id", tagHandler.Delete,
 		handler.RateLimitMiddleware(defaultLimiter, cfg.RateLimitEnabled))
 
-	// Redirect route (no auth, rate limited)
-	e.GET("/:code", redirectHandler.Redirect,
-		handler.RateLimitMiddleware(redirectLimiter, cfg.RateLimitEnabled))
+	// Catch-all middleware for frontend serving, public QR, and redirects
+	// Registered AFTER API routes so they take priority
+	frontendHandler, err := handler.NewFrontendHandler(frontendDist, "dist")
+	if err != nil {
+		slog.Error("failed to initialize frontend handler", "error", err)
+		os.Exit(1)
+	}
+
+	e.Use(handler.CatchAllMiddleware(
+		frontendHandler,
+		db,
+		cfg.BaseURL,
+		redirectLimiter,
+		cfg.RateLimitEnabled,
+		recorder,
+	))
 
 	// Start data retention goroutine if configured
 	retentionRunner := retention.New(db, cfg.DataRetentionDays, slog.Default())
