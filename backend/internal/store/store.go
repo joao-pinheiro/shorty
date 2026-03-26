@@ -10,6 +10,7 @@ import (
 
 var (
 	ErrNotFound    = errors.New("not found")
+	ErrCodeExists  = errors.New("code already exists")
 	ErrTagExists   = errors.New("tag already exists")
 	ErrTagNotFound = errors.New("tag not found")
 )

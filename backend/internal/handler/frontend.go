@@ -112,6 +112,10 @@ func CatchAllMiddleware(
 			if matches := qrPathRegex.FindStringSubmatch(path); matches != nil {
 				code := matches[1]
 
+				if c.Request().Method != http.MethodGet {
+					return frontend.ServeIndex(c)
+				}
+
 				// Rate limit (S8.1: redirect + public QR: 100/min, burst 200)
 				if rateLimitEnabled {
 					limiter := rl.GetLimiter(c.RealIP())
@@ -152,9 +156,7 @@ func CatchAllMiddleware(
 			if matches := codeRegex.FindStringSubmatch(path); matches != nil {
 				code := matches[1]
 
-				link, err := s.GetLinkByCode(c.Request().Context(), code)
-				if err != nil {
-					// Not a known short code -> fall through to SPA fallback
+				if c.Request().Method != http.MethodGet {
 					return frontend.ServeIndex(c)
 				}
 
@@ -170,6 +172,12 @@ func CatchAllMiddleware(
 						return rateLimitResponse(c, limiter, rl.config)
 					}
 					setRateLimitHeaders(c, limiter, rl.config)
+				}
+
+				link, err := s.GetLinkByCode(c.Request().Context(), code)
+				if err != nil {
+					// Not a known short code -> fall through to SPA fallback
+					return frontend.ServeIndex(c)
 				}
 
 				// Check active/expired status (S6.1)

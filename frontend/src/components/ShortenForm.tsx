@@ -68,6 +68,7 @@ export function ShortenForm({ onCreated, onAuthError, tags }: ShortenFormProps) 
       setUrl('');
       setCustomCode('');
       setExpirationPreset(0);
+      setCustomExpiry('');
       setSelectedTags([]);
       onCreated();
     } catch (err) {

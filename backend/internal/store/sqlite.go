@@ -193,16 +193,22 @@ func (s *SQLiteStore) CreateLink(ctx context.Context, code, originalURL string, 
 	var link model.Link
 	var expiresAtStr sql.NullString
 	var isActive int
+	var createdAtStr, updatedAtStr string
 
 	err := s.writeDB.QueryRowContext(ctx, query, code, originalURL, expiresAt).Scan(
 		&link.ID, &link.Code, &link.OriginalURL,
-		&link.CreatedAt, &expiresAtStr, &isActive,
-		&link.ClickCount, &link.UpdatedAt,
+		&createdAtStr, &expiresAtStr, &isActive,
+		&link.ClickCount, &updatedAtStr,
 	)
 	if err != nil {
+		if isUniqueConstraintError(err) {
+			return nil, ErrCodeExists
+		}
 		return nil, fmt.Errorf("insert link: %w", err)
 	}
 
+	link.CreatedAt, _ = parseSQLiteTime(createdAtStr)
+	link.UpdatedAt, _ = parseSQLiteTime(updatedAtStr)
 	link.IsActive = isActive == 1
 	link.ExpiresAt = scanNullableTime(expiresAtStr)
 
@@ -230,11 +236,12 @@ func (s *SQLiteStore) getLinkByFieldFromDB(ctx context.Context, db *sql.DB, fiel
 	var link model.Link
 	var expiresAt sql.NullString
 	var isActive int
+	var createdAtStr, updatedAtStr string
 
 	err := db.QueryRowContext(ctx, query, value).Scan(
 		&link.ID, &link.Code, &link.OriginalURL,
-		&link.CreatedAt, &expiresAt, &isActive,
-		&link.ClickCount, &link.UpdatedAt,
+		&createdAtStr, &expiresAt, &isActive,
+		&link.ClickCount, &updatedAtStr,
 	)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
@@ -243,6 +250,8 @@ func (s *SQLiteStore) getLinkByFieldFromDB(ctx context.Context, db *sql.DB, fiel
 		return nil, fmt.Errorf("get link by %s: %w", field, err)
 	}
 
+	link.CreatedAt, _ = parseSQLiteTime(createdAtStr)
+	link.UpdatedAt, _ = parseSQLiteTime(updatedAtStr)
 	link.IsActive = isActive == 1
 	link.ExpiresAt = scanNullableTime(expiresAt)
 	return &link, nil
@@ -308,7 +317,9 @@ func (s *SQLiteStore) ListLinks(ctx context.Context, params ListParams) (*ListRe
 		"SELECT id, code, original_url, created_at, expires_at, is_active, click_count, updated_at FROM links %s ORDER BY %s %s LIMIT ? OFFSET ?",
 		whereClause, sortColumn, orderDir,
 	)
-	dataArgs := append(args, params.PerPage, offset)
+	dataArgs := make([]interface{}, len(args), len(args)+2)
+	copy(dataArgs, args)
+	dataArgs = append(dataArgs, params.PerPage, offset)
 
 	rows, err := s.readDB.QueryContext(ctx, dataQuery, dataArgs...)
 	if err != nil {
@@ -321,13 +332,16 @@ func (s *SQLiteStore) ListLinks(ctx context.Context, params ListParams) (*ListRe
 		var link model.Link
 		var expiresAt sql.NullString
 		var isActive int
+		var createdAtStr, updatedAtStr string
 		if err := rows.Scan(
 			&link.ID, &link.Code, &link.OriginalURL,
-			&link.CreatedAt, &expiresAt, &isActive,
-			&link.ClickCount, &link.UpdatedAt,
+			&createdAtStr, &expiresAt, &isActive,
+			&link.ClickCount, &updatedAtStr,
 		); err != nil {
 			return nil, fmt.Errorf("scan link: %w", err)
 		}
+		link.CreatedAt, _ = parseSQLiteTime(createdAtStr)
+		link.UpdatedAt, _ = parseSQLiteTime(updatedAtStr)
 		link.IsActive = isActive == 1
 		link.ExpiresAt = scanNullableTime(expiresAt)
 		links = append(links, link)
@@ -352,6 +366,10 @@ func (s *SQLiteStore) UpdateLink(ctx context.Context, id int64, isActive *bool, 
 	if expiresAt != nil {
 		setClauses = append(setClauses, "expires_at = ?")
 		args = append(args, *expiresAt)
+	}
+
+	if len(setClauses) == 0 {
+		return s.getLinkByIDFromDB(ctx, s.writeDB, id)
 	}
 
 	setClauses = append(setClauses, "updated_at = CURRENT_TIMESTAMP")
@@ -395,7 +413,7 @@ func (s *SQLiteStore) DeleteLink(ctx context.Context, id int64) error {
 
 func (s *SQLiteStore) CodeExists(ctx context.Context, code string) (bool, error) {
 	var exists int
-	err := s.readDB.QueryRowContext(ctx,
+	err := s.writeDB.QueryRowContext(ctx,
 		"SELECT 1 FROM links WHERE code = ?", code,
 	).Scan(&exists)
 	if err == sql.ErrNoRows {
@@ -532,6 +550,17 @@ func (s *SQLiteStore) DeleteTag(ctx context.Context, id int64) error {
 }
 
 func (s *SQLiteStore) SetLinkTags(ctx context.Context, linkID int64, tagNames []string) error {
+	// Deduplicate tag names
+	seen := make(map[string]bool, len(tagNames))
+	deduped := make([]string, 0, len(tagNames))
+	for _, name := range tagNames {
+		if !seen[name] {
+			seen[name] = true
+			deduped = append(deduped, name)
+		}
+	}
+	tagNames = deduped
+
 	tx, err := s.writeDB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -572,6 +601,9 @@ func (s *SQLiteStore) SetLinkTags(ctx context.Context, linkID int64, tagNames []
 		existingTags[name] = true
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate existing tags: %w", err)
+	}
 
 	// Count new tags that will be created
 	newTagCount := 0

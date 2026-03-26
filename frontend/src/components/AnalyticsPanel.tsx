@@ -45,7 +45,7 @@ export function AnalyticsPanel({ linkId, onAuthError }: AnalyticsPanelProps) {
           count: h.count,
         }))
       : (analytics.clicks_by_day ?? []).map(d => ({
-          label: format(parseISO(d.date), 'MMM dd'),
+          label: format(parseISO(d.date + 'T00:00:00'), 'MMM d'),
           count: d.count,
         }))
     : [];

@@ -28,6 +28,8 @@ export function LinkRow({
     setDeleting(true);
     try {
       await onDelete(link.id);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to delete link');
     } finally {
       setDeleting(false);
     }
@@ -37,6 +39,8 @@ export function LinkRow({
     setToggling(true);
     try {
       await onToggleActive(link.id, link.is_active);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to update link');
     } finally {
       setToggling(false);
     }

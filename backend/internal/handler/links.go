@@ -108,6 +108,9 @@ func (h *LinkHandler) Create(c echo.Context) error {
 
 	link, err := h.store.CreateLink(c.Request().Context(), code, req.URL, expiresAt)
 	if err != nil {
+		if errors.Is(err, store.ErrCodeExists) {
+			return c.JSON(http.StatusConflict, map[string]string{"error": "code already in use"})
+		}
 		slog.Error("create link failed", "error", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal server error"})
 	}

@@ -17,6 +17,7 @@ export function QRCodeModal({ isOpen, onClose, linkId, shortUrl, code, onAuthErr
 
   useEffect(() => {
     if (!isOpen) return;
+    setQrUrl(null);
     setLoading(true);
     setError(null);
 
