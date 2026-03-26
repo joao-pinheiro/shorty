@@ -15,6 +15,7 @@ import (
 	"github.com/labstack/echo/v4"
 	echomw "github.com/labstack/echo/v4/middleware"
 
+	"shorty/internal/clickrecorder"
 	"shorty/internal/config"
 	"shorty/internal/handler"
 	"shorty/internal/migrations"
@@ -51,10 +52,10 @@ func main() {
 		slog.Error("failed to open store", "error", err)
 		os.Exit(1)
 	}
-	defer db.Close()
 
 	if *migrateOnly {
 		slog.Info("migrations applied successfully")
+		db.Close()
 		return
 	}
 
@@ -122,9 +123,14 @@ func main() {
 	go redirectLimiter.StartCleanup(cleanupCtx)
 	go defaultLimiter.StartCleanup(cleanupCtx)
 
+	// Create click recorder (S9.2)
+	recorder := clickrecorder.New(db, cfg.ClickBufferSize, cfg.ClickFlushInterval)
+	recorderCtx, recorderCancel := context.WithCancel(context.Background())
+	recorder.Start(recorderCtx)
+
 	// Create handlers
 	linkHandler := handler.NewLinkHandler(db, cfg)
-	redirectHandler := handler.NewRedirectHandler(db)
+	redirectHandler := handler.NewRedirectHandler(db, recorder)
 
 	// Public routes — no auth required
 	e.GET("/api/health", handler.HealthCheck)
@@ -166,14 +172,36 @@ func main() {
 	<-quit
 
 	slog.Info("shutting down server")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 
+	// 1. Stop accepting new HTTP connections (S10 step 1)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+
+	if err := e.Shutdown(shutdownCtx); err != nil {
+		slog.Error("server forced to shutdown", "error", err)
+	}
+
+	// 2. Stop rate limiter cleanup goroutines
 	cleanupCancel()
 
-	if err := e.Shutdown(ctx); err != nil {
-		slog.Error("server forced to shutdown", "error", err)
+	// 3. Drain click channel and flush remaining batch (S10 step 3)
+	recorderCancel()
+	drainDone := make(chan struct{})
+	go func() {
+		recorder.Stop()
+		close(drainDone)
+	}()
+	select {
+	case <-drainDone:
+		slog.Info("click buffer drained successfully")
+	case <-time.After(5 * time.Second):
+		slog.Warn("click buffer drain timed out")
 		os.Exit(1)
+	}
+
+	// 4. Close database connections (S10 step 4)
+	if err := db.Close(); err != nil {
+		slog.Error("failed to close database", "error", err)
 	}
 
 	slog.Info("server stopped")

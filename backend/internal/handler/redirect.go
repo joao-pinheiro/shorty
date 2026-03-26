@@ -9,15 +9,17 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"shorty/internal/clickrecorder"
 	"shorty/internal/store"
 )
 
 type RedirectHandler struct {
-	store store.Store
+	store    store.Store
+	recorder *clickrecorder.Recorder
 }
 
-func NewRedirectHandler(s store.Store) *RedirectHandler {
-	return &RedirectHandler{store: s}
+func NewRedirectHandler(s store.Store, recorder *clickrecorder.Recorder) *RedirectHandler {
+	return &RedirectHandler{store: s, recorder: recorder}
 }
 
 func (h *RedirectHandler) Redirect(c echo.Context) error {
@@ -47,6 +49,8 @@ func (h *RedirectHandler) Redirect(c echo.Context) error {
 		}
 		return c.JSON(http.StatusGone, map[string]string{"error": "link has expired"})
 	}
+
+	h.recorder.Record(link.ID)
 
 	c.Response().Header().Set("X-Frame-Options", "DENY")
 	c.Response().Header().Set("Cache-Control", "private, max-age=0")

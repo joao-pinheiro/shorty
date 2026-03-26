@@ -408,7 +408,48 @@ func (s *SQLiteStore) CodeExists(ctx context.Context, code string) (bool, error)
 }
 
 func (s *SQLiteStore) BatchInsertClicks(ctx context.Context, events []ClickEvent) error {
-	return fmt.Errorf("not implemented")
+	if len(events) == 0 {
+		return nil
+	}
+
+	tx, err := s.writeDB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	insertStmt, err := tx.PrepareContext(ctx, "INSERT INTO clicks (link_id, clicked_at) VALUES (?, ?)")
+	if err != nil {
+		return fmt.Errorf("prepare insert: %w", err)
+	}
+	defer insertStmt.Close()
+
+	counts := make(map[int64]int)
+	for _, event := range events {
+		if _, err := insertStmt.ExecContext(ctx, event.LinkID, event.ClickedAt); err != nil {
+			return fmt.Errorf("insert click: %w", err)
+		}
+		counts[event.LinkID]++
+	}
+
+	updateStmt, err := tx.PrepareContext(ctx,
+		"UPDATE links SET click_count = click_count + ? WHERE id = ?")
+	if err != nil {
+		return fmt.Errorf("prepare update: %w", err)
+	}
+	defer updateStmt.Close()
+
+	for linkID, count := range counts {
+		if _, err := updateStmt.ExecContext(ctx, count, linkID); err != nil {
+			return fmt.Errorf("update click_count for link %d: %w", linkID, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+
+	return nil
 }
 
 func (s *SQLiteStore) CreateTag(ctx context.Context, name string) (*model.Tag, error) {
