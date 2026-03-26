@@ -221,9 +221,8 @@ PRAGMA temp_store=MEMORY;
 ## 5. Authentication
 
 ### Mechanism
-- Single API key configured via `API_KEY` environment variable
+- Single API key configured via `API_KEY` environment variable (**required** — the server refuses to start if `API_KEY` is empty or unset, logging a fatal error)
 - Passed in HTTP header: `Authorization: Bearer <key>`
-- If `API_KEY` is empty/unset, auth is disabled (all endpoints open)
 - Key comparison uses `crypto/subtle.ConstantTimeCompare` to prevent timing attacks
 
 ### Scope
@@ -561,10 +560,7 @@ Multi-layer validation in `urlcheck` package:
 
 1. **Parse**: `url.Parse()` must succeed
 2. **Scheme**: Must be `http` or `https`. Reject `javascript:`, `data:`, `ftp:`, etc.
-3. **Host**: Must have a non-empty host. Reject:
-   - `localhost`, `127.0.0.0/8`
-   - `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`
-   - `::1`, `0.0.0.0`
+3. **Host**: Must have a non-empty host. Resolve the host to `net.IP` and reject if any of: `IsLoopback()`, `IsPrivate()`, `IsLinkLocalUnicast()`, `IsLinkLocalMulticast()`, or `IsUnspecified()` returns true. This covers IPv4 private ranges, IPv6 equivalents, IPv6-mapped IPv4 addresses (e.g. `::ffff:127.0.0.1`), and link-local addresses.
 4. **Length**: Max 2048 characters
 5. **Safe Browsing** (optional): If `GOOGLE_SAFE_BROWSING_API_KEY` is set, check against Google Safe Browsing API v4. If not configured, skip gracefully.
 
@@ -576,11 +572,13 @@ Multi-layer validation in `urlcheck` package:
 
 Token bucket per IP using Echo's built-in rate limiter middleware (`echo.middleware.RateLimiter`) or `golang.org/x/time/rate` wrapped in Echo middleware.
 
+Client IP is extracted using Echo's `IPExtractor`. When `TRUSTED_PROXIES` is configured, the IP is read from the `X-Forwarded-For` header after stripping trusted proxy hops. When unset, the IP is taken from the direct connection's remote address.
+
 | Endpoint | Rate | Burst |
 |----------|------|-------|
 | `POST /api/v1/links` | 10/min | 20 |
 | `POST /api/v1/links/bulk` | 2/min | 5 |
-| `GET /:code` (redirect) | 100/min | 200 |
+| `GET /:code` (redirect) and `GET /:code/qr` (public QR) | 100/min | 200 |
 | All other API endpoints | 30/min | 60 |
 
 Stale limiters (no activity for 10 min) purged by background goroutine every 5 minutes.
@@ -668,12 +666,14 @@ If the drain timeout expires, log a warning with the number of dropped in-flight
 
 All via environment variables with sensible defaults. If a `.env` file exists in the working directory, it is loaded on startup (env vars take precedence over `.env` values).
 
+**Security**: The `.env` file may contain `API_KEY` and should be added to `.gitignore`, have restrictive file permissions (`600`), and must not be copied into Docker images (use env vars or Docker secrets instead).
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `8080` | HTTP listen port |
 | `BASE_URL` | `http://localhost:8080` | Used to construct short URLs in responses |
 | `DB_PATH` | `./shorty.db` | SQLite file path |
-| `API_KEY` | (empty) | API key for auth. Empty = auth disabled |
+| `API_KEY` | **(required)** | API key for auth. Server refuses to start if unset. |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:5173` | Comma-separated allowed origins |
 | `DEFAULT_CODE_LENGTH` | `6` | Generated short code length |
@@ -681,6 +681,7 @@ All via environment variables with sensible defaults. If a `.env` file exists in
 | `CLICK_BUFFER_SIZE` | `10000` | Async click channel buffer capacity |
 | `CLICK_FLUSH_INTERVAL` | `1` | Batch insert interval for clicks (integer seconds) |
 | `RATE_LIMIT_ENABLED` | `true` | Toggle rate limiting on/off |
+| `TRUSTED_PROXIES` | (empty) | Comma-separated CIDRs of trusted reverse proxies (e.g. `172.16.0.0/12`). When set, client IP is extracted from X-Forwarded-For. |
 | `GOOGLE_SAFE_BROWSING_API_KEY` | (empty) | Enable safe browsing URL checks |
 | `DATA_RETENTION_DAYS` | `0` | Days to keep click data (0 = forever) |
 
