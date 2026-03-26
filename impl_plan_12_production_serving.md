@@ -248,18 +248,21 @@ func CatchAllMiddleware(
 			}
 
 			// 3. Check if path matches a short code → redirect (S6.1)
+			// If the code is NOT found in DB, fall through to SPA fallback (step 4)
+			// because we can't distinguish a missing short code from a SPA route
+			// like /dashboard or /settings.
 			if matches := codeRegex.FindStringSubmatch(path); matches != nil {
 				code := matches[1]
 
-				// Rate limit (S8.1: 100/min, burst 200)
-				if err := rl.Allow(c); err != nil {
-					return err
-				}
-
 				link, err := store.GetLinkByCode(c.Request().Context(), code)
 				if err != nil {
-					// Not a known short code → 404, NOT SPA fallback (path matched short code pattern)
-					return c.JSON(http.StatusNotFound, map[string]string{"error": "not found"})
+					// Not a known short code → fall through to SPA fallback
+					return frontend.ServeIndex(c)
+				}
+
+				// Rate limit (S8.1: 100/min, burst 200) — only for actual redirects
+				if err := rl.Allow(c); err != nil {
+					return err
 				}
 
 				// Check active/expired status (S6.1)
@@ -301,7 +304,7 @@ func CatchAllMiddleware(
 - **`/api/*` is skipped entirely** — Echo routes handle those. The middleware calls `next(c)` for API paths.
 - **Static file check is first** so that `assets/index-abc123.js` is served directly without hitting the DB.
 - **QR pattern is checked before generic code pattern** because `/:code/qr` would also match `codeRegex` if "qr" were a valid code.
-- **Unknown codes return `404 {"error": "not found"}`** rather than falling through to SPA. Only paths that do NOT match the short code regex (e.g., `/dashboard`, `/settings`) fall through to SPA. This cleanly separates SPA routes from code lookups.
+- **Bare `/:code` paths fall through to SPA when code is not found in DB** because we can't distinguish a missing short code from a SPA route like `/dashboard` or `/settings`. Only `/:code/qr` returns `404 {"error": "not found"}` for unknown codes since that path is unambiguously a QR request, not a SPA route.
 - **Rate limiting** is applied to redirect and public QR but NOT to static file serving or SPA fallback.
 
 ---
@@ -471,9 +474,10 @@ Ensure production build outputs to `frontend/dist/` with hashed filenames for ca
 ```typescript
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   build: {
     outDir: 'dist',
     sourcemap: false,
@@ -528,8 +532,9 @@ In production (served by Go), the Vite proxy is not used — all requests go to 
    - Invalid size values ignored (uses default 256).
 
 6. **SPA fallback**:
-   - Visit `http://localhost:8080/dashboard` (not a code pattern, not a file) — serves index.html, React app renders.
-   - Visit `http://localhost:8080/abc123` where `abc123` is not a real code — returns `404 {"error": "not found"}` (NOT SPA fallback, because path matches short code regex).
+   - Visit `http://localhost:8080/dashboard` — serves index.html, React app renders.
+   - Visit `http://localhost:8080/abc123` where `abc123` is not a real code — serves index.html (SPA fallback), because bare `/:code` paths fall through when code not found in DB.
+   - Visit `http://localhost:8080/abc123/qr` where `abc123` is not a real code — returns `404 {"error": "not found"}` (QR path is unambiguously not a SPA route).
 
 7. **Trailing slash normalization** (S19):
    - `http://localhost:8080/{code}/` redirects same as `http://localhost:8080/{code}`.

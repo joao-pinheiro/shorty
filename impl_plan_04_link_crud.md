@@ -111,7 +111,7 @@ func (s *SQLiteStore) GetLinkByCode(ctx context.Context, code string) (*model.Li
 		&link.ClickCount, &link.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
-		return nil, nil // not found
+		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get link by code: %w", err)
@@ -134,7 +134,7 @@ func (s *SQLiteStore) GetLinkByID(ctx context.Context, id int64) (*model.Link, e
 		FROM links WHERE id = ?`
 
 	// Same scanning logic as GetLinkByCode
-	// Returns nil, nil if not found
+	// Returns nil, ErrNotFound if not found
 }
 ```
 
@@ -295,7 +295,7 @@ func (s *SQLiteStore) UpdateLink(ctx context.Context, id int64, isActive *bool, 
 
 	rowsAffected, _ := result.RowsAffected()
 	if rowsAffected == 0 {
-		return nil, nil // not found
+		return nil, ErrNotFound
 	}
 
 	// Re-fetch the updated link
@@ -585,11 +585,11 @@ func (h *LinkHandler) Get(c echo.Context) error {
 
 	link, err := h.store.GetLinkByID(c.Request().Context(), id)
 	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return c.JSON(http.StatusNotFound, map[string]string{"error": "not found"})
+		}
 		slog.Error("get link failed", "error", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal server error"})
-	}
-	if link == nil {
-		return c.JSON(http.StatusNotFound, map[string]string{"error": "not found"})
 	}
 
 	link.ShortURL = h.config.BaseURL + "/" + link.Code
@@ -634,10 +634,10 @@ func (h *LinkHandler) Update(c echo.Context) error {
 	// Check link exists
 	existing, err := h.store.GetLinkByID(c.Request().Context(), id)
 	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return c.JSON(http.StatusNotFound, map[string]string{"error": "not found"})
+		}
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal server error"})
-	}
-	if existing == nil {
-		return c.JSON(http.StatusNotFound, map[string]string{"error": "not found"})
 	}
 
 	// Validate expires_at is valid RFC3339 if provided
@@ -662,10 +662,10 @@ func (h *LinkHandler) Update(c echo.Context) error {
 	// Update link fields
 	link, err := h.store.UpdateLink(c.Request().Context(), id, req.IsActive, req.ExpiresAt)
 	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return c.JSON(http.StatusNotFound, map[string]string{"error": "not found"})
+		}
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal server error"})
-	}
-	if link == nil {
-		return c.JSON(http.StatusNotFound, map[string]string{"error": "not found"})
 	}
 
 	// Update tags if provided (full replacement, S6.6)
@@ -745,13 +745,11 @@ func (h *RedirectHandler) Redirect(c echo.Context) error {
 
 	link, err := h.store.GetLinkByCode(c.Request().Context(), code)
 	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return c.JSON(http.StatusNotFound, map[string]string{"error": "not found"})
+		}
 		slog.Error("redirect lookup failed", "error", err, "code", code)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal server error"})
-	}
-
-	// Not found (S6.1)
-	if link == nil {
-		return c.JSON(http.StatusNotFound, map[string]string{"error": "not found"})
 	}
 
 	// Deactivated (S6.1)

@@ -327,7 +327,8 @@ select {
 case <-drainDone:
 	slog.Info("click buffer drained successfully")
 case <-time.After(5 * time.Second):
-	slog.Warn("click buffer drain timed out, some clicks may be lost")
+	remaining := len(recorder.clickCh)
+	slog.Warn("click buffer drain timed out", "dropped_clicks", remaining)
 	os.Exit(1)
 }
 

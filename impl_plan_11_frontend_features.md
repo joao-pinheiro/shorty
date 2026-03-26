@@ -33,14 +33,14 @@ This hook manages tag list state and provides create/delete operations. Used by 
 
 ```typescript
 import { useState, useEffect, useCallback } from 'react';
-import { Tag } from '../types';
+import { TagWithCount } from '../types';
 import { api } from '../api/client';
 
 interface UseTagsReturn {
-  tags: Tag[];
+  tags: TagWithCount[];
   loading: boolean;
   error: string | null;
-  createTag: (name: string) => Promise<Tag>;
+  createTag: (name: string) => Promise<TagWithCount>;
   deleteTag: (id: number) => Promise<void>;
   refetch: () => Promise<void>;
 }
@@ -51,7 +51,7 @@ export function useTags(): UseTagsReturn;
 ### State
 
 ```typescript
-const [tags, setTags] = useState<Tag[]>([]);
+const [tags, setTags] = useState<TagWithCount[]>([]);
 const [loading, setLoading] = useState(true);
 const [error, setError] = useState<string | null>(null);
 ```
@@ -280,46 +280,40 @@ const [error, setError] = useState<string | null>(null);
 ### Behavior
 
 1. The QR code image is fetched from the API endpoint: `GET /api/v1/links/:id/qr?size=256` (authenticated).
-   - Use `api.getQRCodeUrl(linkId, 256)` which returns the URL string (from S15.4).
-   - Render as `<img src={qrUrl} />` where `qrUrl` includes the auth header approach below.
+   - Use `api.getQRCodeBlob(linkId, 256)` which returns a `Promise<Blob>` with auth handled internally (from S15.4).
 
-2. **Auth for image src**: Since `<img>` tags can't send Authorization headers, fetch the image as a blob:
+2. **Fetch as blob and create object URL**:
    ```typescript
-   const [imageSrc, setImageSrc] = useState<string | null>(null);
+   const [qrUrl, setQrUrl] = useState<string | null>(null);
 
    useEffect(() => {
      if (!isOpen) return;
      setLoading(true);
      setError(null);
 
-     const fetchQR = async () => {
-       try {
-         const response = await fetch(api.getQRCodeUrl(linkId, 256), {
-           headers: { Authorization: `Bearer ${api.getApiKey()}` },
-         });
-         if (!response.ok) throw new Error('Failed to load QR code');
-         const blob = await response.blob();
-         setImageSrc(URL.createObjectURL(blob));
-       } catch (err) {
-         setError(err instanceof Error ? err.message : 'Unknown error');
-       } finally {
+     api.getQRCodeBlob(linkId, 256)
+       .then(blob => {
+         setQrUrl(URL.createObjectURL(blob));
+       })
+       .catch(err => {
+         setError(err instanceof Error ? err.message : 'Failed to load QR code');
+       })
+       .finally(() => {
          setLoading(false);
-       }
-     };
+       });
 
-     fetchQR();
      return () => {
-       if (imageSrc) URL.revokeObjectURL(imageSrc);
+       if (qrUrl) URL.revokeObjectURL(qrUrl);
      };
    }, [isOpen, linkId]);
    ```
 
-3. **Download button**: Create an anchor element programmatically.
+3. **Download button**: Create an anchor element programmatically using the same object URL.
    ```typescript
    const handleDownload = () => {
-     if (!imageSrc) return;
+     if (!qrUrl) return;
      const a = document.createElement('a');
-     a.href = imageSrc;
+     a.href = qrUrl;
      a.download = `qr-${code}.png`;
      a.click();
    };

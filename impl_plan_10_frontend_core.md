@@ -861,11 +861,6 @@ export function Dashboard({ onAuthError }: DashboardProps) {
     console.log('QR for', link.code);
   }, []);
 
-  const handleShowAnalytics = useCallback((link: Link) => {
-    // Phase 11: expand analytics panel
-    console.log('Analytics for', link.code);
-  }, []);
-
   return (
     <div>
       <ShortenForm
@@ -900,7 +895,6 @@ export function Dashboard({ onAuthError }: DashboardProps) {
           onDelete={deleteLink}
           onToggleActive={toggleActive}
           onShowQR={handleShowQR}
-          onShowAnalytics={handleShowAnalytics}
         />
       </div>
     </div>
@@ -1053,7 +1047,6 @@ it('renders links and pagination', () => {
       onDelete={vi.fn()}
       onToggleActive={vi.fn()}
       onShowQR={vi.fn()}
-      onShowAnalytics={vi.fn()}
     />,
   );
 
@@ -1065,7 +1058,7 @@ it('shows empty state when no links', () => {
   render(
     <LinkTable links={[]} total={0} page={1} perPage={20} loading={false}
       onPageChange={vi.fn()} onDelete={vi.fn()} onToggleActive={vi.fn()}
-      onShowQR={vi.fn()} onShowAnalytics={vi.fn()} />,
+      onShowQR={vi.fn()} />,
   );
 
   expect(screen.getByText(/no links found/i)).toBeInTheDocument();

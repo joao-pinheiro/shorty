@@ -285,7 +285,7 @@ func (h *AnalyticsHandler) Get(c echo.Context) error {
     // Verify link exists
     _, err = h.store.GetLinkByID(ctx, id)
     if err != nil {
-        if errors.Is(err, store.ErrLinkNotFound) {
+        if errors.Is(err, store.ErrNotFound) {
             return c.JSON(http.StatusNotFound, errorResponse("not found"))
         }
         return internalError(c, err)
@@ -419,7 +419,7 @@ func (h *LinkHandler) QRCode(c echo.Context) error {
     ctx := c.Request().Context()
     link, err := h.store.GetLinkByID(ctx, id)
     if err != nil {
-        if errors.Is(err, store.ErrLinkNotFound) {
+        if errors.Is(err, store.ErrNotFound) {
             return c.JSON(http.StatusNotFound, errorResponse("not found"))
         }
         return internalError(c, err)
@@ -463,12 +463,16 @@ if strings.HasSuffix(path, "/qr") {
     code := strings.TrimSuffix(strings.TrimPrefix(path, "/"), "/qr")
     if code != "" {
         link, err := store.GetLinkByCode(ctx, code)
-        if err == nil {
-            shortURL := cfg.BaseURL + "/" + link.Code
-            size := parseSizeParam(c, 256)
-            png, _ := qr.Generate(shortURL, size)
-            return c.Blob(200, "image/png", png)
+        if err != nil {
+            if errors.Is(err, store.ErrNotFound) {
+                return c.JSON(404, map[string]string{"error": "not found"})
+            }
+            return c.JSON(500, map[string]string{"error": "internal server error"})
         }
+        shortURL := cfg.BaseURL + "/" + link.Code
+        size := parseSizeParam(c, 256)
+        png, _ := qr.Generate(shortURL, size)
+        return c.Blob(200, "image/png", png)
     }
 }
 ```

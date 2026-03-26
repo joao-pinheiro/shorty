@@ -225,7 +225,8 @@ type MockStore struct {
 	BatchInsertClicksFn    func(ctx context.Context, clicks []model.Click) error
 	GetClicksByDayFn       func(ctx context.Context, linkID int64, since time.Time) ([]model.DayCount, error)
 	GetClicksByHourFn      func(ctx context.Context, linkID int64, since time.Time) ([]model.HourCount, error)
-	GetPeriodClickCountFn  func(ctx context.Context, linkID int64, since time.Time) (int, error)
+	GetPeriodClickCountFn       func(ctx context.Context, linkID int64, since time.Time) (int, error)
+	DeleteClicksOlderThanFn     func(ctx context.Context, before time.Time) (int64, error)
 }
 
 // Each method delegates to the corresponding Fn field. Nil Fn panics (test setup error).
@@ -233,6 +234,10 @@ func (m *MockStore) CreateLink(ctx context.Context, url, code string, expiresAt 
 	return m.CreateLinkFn(ctx, url, code, expiresAt)
 }
 // ... repeat for all methods
+
+func (m *MockStore) DeleteClicksOlderThan(ctx context.Context, before time.Time) (int64, error) {
+	return m.DeleteClicksOlderThanFn(ctx, before)
+}
 ```
 
 #### Test Helper

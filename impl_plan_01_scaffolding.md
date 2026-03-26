@@ -246,6 +246,7 @@ type ListResult struct {
 // ClickEvent is sent through the async click channel.
 type ClickEvent struct {
 	LinkID    int64
+	ClickedAt time.Time
 }
 
 type Store interface {
@@ -270,9 +271,9 @@ type Store interface {
 	GetLinkTags(ctx context.Context, linkID int64) ([]string, error)
 	GetLinksTagsBatch(ctx context.Context, linkIDs []int64) (map[int64][]string, error)
 
-	// Analytics
-	GetClicksByDay(ctx context.Context, linkID int64, since string) ([]DayCount, error)
-	GetClicksByHour(ctx context.Context, linkID int64, since string) ([]HourCount, error)
+	// Analytics (DayCount and HourCount are defined in model.go)
+	GetClicksByDay(ctx context.Context, linkID int64, since string) ([]model.DayCount, error)
+	GetClicksByHour(ctx context.Context, linkID int64, since string) ([]model.HourCount, error)
 	GetPeriodClickCount(ctx context.Context, linkID int64, since string) (int, error)
 
 	// Retention
@@ -282,15 +283,8 @@ type Store interface {
 	Close() error
 }
 
-type DayCount struct {
-	Date  string `json:"date"`
-	Count int    `json:"count"`
-}
-
-type HourCount struct {
-	Hour  string `json:"hour"`
-	Count int    `json:"count"`
-}
+// Note: DayCount and HourCount are defined in model.go (model.DayCount, model.HourCount).
+// Do not duplicate them here.
 ```
 
 ---

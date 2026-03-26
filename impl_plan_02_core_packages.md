@@ -209,13 +209,20 @@ const MaxURLLength = 2048
 
 ### SafeBrowsingChecker Interface
 
-When `GOOGLE_SAFE_BROWSING_API_KEY` is configured, a `SafeBrowsingChecker` is passed to `Validate`. If `sbChecker` is nil, the Safe Browsing check is skipped.
+When `GOOGLE_SAFE_BROWSING_API_KEY` is configured, the checker is set at startup via `SetSafeBrowsingChecker`. If no checker is set, the Safe Browsing check is skipped.
 
 ```go
 // SafeBrowsingChecker is an optional interface for Google Safe Browsing integration.
-// When GOOGLE_SAFE_BROWSING_API_KEY is configured, the caller passes an implementation.
+// When GOOGLE_SAFE_BROWSING_API_KEY is configured, set via SetSafeBrowsingChecker at startup.
 type SafeBrowsingChecker interface {
     Check(ctx context.Context, url string) error
+}
+
+// Package-level variable, set during app startup:
+var safeBrowsingChecker SafeBrowsingChecker
+
+func SetSafeBrowsingChecker(c SafeBrowsingChecker) {
+    safeBrowsingChecker = c
 }
 ```
 
@@ -224,8 +231,7 @@ type SafeBrowsingChecker interface {
 ```go
 // Validate checks a URL against all validation rules (S7).
 // Returns nil if valid, or an error with a user-facing message.
-// If sbChecker is nil, the Safe Browsing check is skipped.
-func Validate(rawURL string, sbChecker SafeBrowsingChecker) error {
+func Validate(rawURL string) error {
 	// 0. Trim whitespace, normalize (S8.3)
 	rawURL = strings.TrimSpace(rawURL)
 
@@ -266,8 +272,8 @@ func Validate(rawURL string, sbChecker SafeBrowsingChecker) error {
 	}
 
 	// 5. Safe Browsing check (optional, S7)
-	if sbChecker != nil {
-		if err := sbChecker.Check(context.Background(), rawURL); err != nil {
+	if safeBrowsingChecker != nil {
+		if err := safeBrowsingChecker.Check(context.Background(), rawURL); err != nil {
 			return fmt.Errorf("URL flagged as potentially unsafe")
 		}
 	}

@@ -43,7 +43,7 @@ type TagWithCount struct {
     ID        int64     `json:"id"`
     Name      string    `json:"name"`
     CreatedAt time.Time `json:"created_at"`
-    LinkCount int       `json:"link_count"`
+    LinkCount int64     `json:"link_count"`
 }
 ```
 
@@ -234,9 +234,9 @@ func (s *SQLiteStore) SetLinkTags(ctx context.Context, linkID int64, tagNames []
     }
 
     // 3. Insert link_tags associations
-    // Build placeholders for IN clause
-    placeholders := make([]string, len(tagNames))
-    args := make([]interface{}, 0, len(tagNames)+1)
+    // Reuse placeholders and args slices from step 2
+    placeholders = make([]string, len(tagNames))
+    args = make([]interface{}, 0, len(tagNames)+1)
     args = append(args, linkID)
     for i, name := range tagNames {
         placeholders[i] = "?"
