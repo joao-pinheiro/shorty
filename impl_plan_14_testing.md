@@ -233,9 +233,10 @@ type MockStore struct {
 	GetLinksTagsBatchFn    func(ctx context.Context, linkIDs []int64) (map[int64][]string, error)
 
 	// Analytics
-	GetClicksByDayFn       func(ctx context.Context, linkID int64, since string) ([]model.DayCount, error)
-	GetClicksByHourFn      func(ctx context.Context, linkID int64, since string) ([]model.HourCount, error)
-	GetPeriodClickCountFn  func(ctx context.Context, linkID int64, since string) (int, error)
+	GetClicksByDayFn       func(ctx context.Context, linkID int64, since time.Time) ([]model.DayCount, error)
+	GetClicksByHourFn      func(ctx context.Context, linkID int64, since time.Time) ([]model.HourCount, error)
+	GetPeriodClickCountFn  func(ctx context.Context, linkID int64, since time.Time) (int, error)
+	GetTotalClickCountFn   func(ctx context.Context, linkID int64) (int, error)
 
 	// Retention
 	DeleteClicksOlderThanFn func(ctx context.Context, before time.Time) (int64, error)
@@ -296,14 +297,17 @@ func (m *MockStore) GetLinkTags(ctx context.Context, linkID int64) ([]string, er
 func (m *MockStore) GetLinksTagsBatch(ctx context.Context, linkIDs []int64) (map[int64][]string, error) {
 	return m.GetLinksTagsBatchFn(ctx, linkIDs)
 }
-func (m *MockStore) GetClicksByDay(ctx context.Context, linkID int64, since string) ([]model.DayCount, error) {
+func (m *MockStore) GetClicksByDay(ctx context.Context, linkID int64, since time.Time) ([]model.DayCount, error) {
 	return m.GetClicksByDayFn(ctx, linkID, since)
 }
-func (m *MockStore) GetClicksByHour(ctx context.Context, linkID int64, since string) ([]model.HourCount, error) {
+func (m *MockStore) GetClicksByHour(ctx context.Context, linkID int64, since time.Time) ([]model.HourCount, error) {
 	return m.GetClicksByHourFn(ctx, linkID, since)
 }
-func (m *MockStore) GetPeriodClickCount(ctx context.Context, linkID int64, since string) (int, error) {
+func (m *MockStore) GetPeriodClickCount(ctx context.Context, linkID int64, since time.Time) (int, error) {
 	return m.GetPeriodClickCountFn(ctx, linkID, since)
+}
+func (m *MockStore) GetTotalClickCount(ctx context.Context, linkID int64) (int, error) {
+	return m.GetTotalClickCountFn(ctx, linkID)
 }
 func (m *MockStore) DeleteClicksOlderThan(ctx context.Context, before time.Time) (int64, error) {
 	return m.DeleteClicksOlderThanFn(ctx, before)

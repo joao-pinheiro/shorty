@@ -56,22 +56,25 @@ These may already exist from Phase 1 model stubs. Verify and add `TagWithCount` 
 ### 3.1 `CreateTag`
 
 ```go
-func (s *SQLiteStore) CreateTag(ctx context.Context, name string) (model.Tag, error) {
+func (s *SQLiteStore) CreateTag(ctx context.Context, name string) (*model.Tag, error) {
     res, err := s.writeDB.ExecContext(ctx,
         `INSERT INTO tags (name) VALUES (?)`, name)
     if err != nil {
         // Check for UNIQUE constraint violation → return sentinel ErrTagExists
         if isUniqueConstraintError(err) {
-            return model.Tag{}, ErrTagExists
+            return nil, ErrTagExists
         }
-        return model.Tag{}, err
+        return nil, err
     }
     id, _ := res.LastInsertId()
     var tag model.Tag
     err = s.readDB.QueryRowContext(ctx,
         `SELECT id, name, created_at FROM tags WHERE id = ?`, id).
         Scan(&tag.ID, &tag.Name, &tag.CreatedAt)
-    return tag, err
+    if err != nil {
+        return nil, err
+    }
+    return &tag, nil
 }
 ```
 
@@ -116,15 +119,18 @@ func (s *SQLiteStore) ListTags(ctx context.Context) ([]model.TagWithCount, error
 ### 3.3 `GetTagByID`
 
 ```go
-func (s *SQLiteStore) GetTagByID(ctx context.Context, id int64) (model.Tag, error) {
+func (s *SQLiteStore) GetTagByID(ctx context.Context, id int64) (*model.Tag, error) {
     var tag model.Tag
     err := s.readDB.QueryRowContext(ctx,
         `SELECT id, name, created_at FROM tags WHERE id = ?`, id).
         Scan(&tag.ID, &tag.Name, &tag.CreatedAt)
     if err == sql.ErrNoRows {
-        return tag, ErrTagNotFound
+        return nil, ErrTagNotFound
     }
-    return tag, err
+    if err != nil {
+        return nil, err
+    }
+    return &tag, nil
 }
 ```
 

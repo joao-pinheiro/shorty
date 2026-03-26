@@ -285,9 +285,10 @@ type Store interface {
 	GetLinksTagsBatch(ctx context.Context, linkIDs []int64) (map[int64][]string, error)
 
 	// Analytics (DayCount and HourCount are defined in model.go)
-	GetClicksByDay(ctx context.Context, linkID int64, since string) ([]model.DayCount, error)
-	GetClicksByHour(ctx context.Context, linkID int64, since string) ([]model.HourCount, error)
-	GetPeriodClickCount(ctx context.Context, linkID int64, since string) (int, error)
+	GetClicksByDay(ctx context.Context, linkID int64, since time.Time) ([]model.DayCount, error)
+	GetClicksByHour(ctx context.Context, linkID int64, since time.Time) ([]model.HourCount, error)
+	GetPeriodClickCount(ctx context.Context, linkID int64, since time.Time) (int, error)
+	GetTotalClickCount(ctx context.Context, linkID int64) (int, error)
 
 	// Retention
 	DeleteClicksOlderThan(ctx context.Context, before time.Time) (int64, error)

@@ -229,8 +229,8 @@ func CatchAllMiddleware(
 				code := matches[1]
 
 				// Rate limit (S8.1: redirect + public QR: 100/min, burst 200)
-				if err := rl.Allow(c); err != nil {
-					return err
+				if !rl.Allow(c.RealIP()) {
+					return c.JSON(http.StatusTooManyRequests, map[string]string{"error": "rate limit exceeded"})
 				}
 
 				// Look up link (no status check — QR always returned per S6.9)
@@ -272,8 +272,8 @@ func CatchAllMiddleware(
 				}
 
 				// Rate limit (S8.1: 100/min, burst 200) — only for actual redirects
-				if err := rl.Allow(c); err != nil {
-					return err
+				if !rl.Allow(c.RealIP()) {
+					return c.JSON(http.StatusTooManyRequests, map[string]string{"error": "rate limit exceeded"})
 				}
 
 				// Check active/expired status (S6.1)
@@ -293,7 +293,7 @@ func CatchAllMiddleware(
 
 				// Non-blocking send to click channel
 				select {
-				case clickChan <- clickrecorder.ClickEvent{LinkID: link.ID, ClickedAt: time.Now()}:
+				case clickChan <- store.ClickEvent{LinkID: link.ID, ClickedAt: time.Now()}:
 				default:
 					slog.Warn("click buffer full, dropping click")
 				}
