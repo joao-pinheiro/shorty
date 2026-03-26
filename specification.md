@@ -228,7 +228,7 @@ PRAGMA temp_store=MEMORY;
 
 ### Scope
 - **Required**: All `/api/v1/*` endpoints (reads and writes)
-- **Not required**: `GET /:code` (redirect), `GET /api/health`
+- **Not required**: `GET /:code` (redirect), `GET /:code/qr` (public QR), `GET /api/health`
 
 ### Error Responses
 - Missing header: `401 {"error": "missing authorization header"}`
@@ -276,7 +276,7 @@ Authorization: Bearer <key>
 }
 ```
 
-All fields except `url` are optional. `expires_in` is seconds from now (maximum 31536000 = 365 days; returns 400 if exceeded). `tags` are created if they don't exist; if any tag name is invalid (fails `^[a-zA-Z0-9_-]{1,50}$`), the entire request fails with 400.
+All fields except `url` are optional. `expires_in` is seconds from now (must be a positive integer; maximum 31536000 = 365 days; returns 400 if zero, negative, or exceeds max). `tags` are created if they don't exist; if any tag name is invalid (fails `^[a-zA-Z0-9_-]{1,50}$`), the entire request fails with 400.
 
 **Response 201**:
 ```json
@@ -305,7 +305,7 @@ All fields except `url` are optional. `expires_in` is seconds from now (maximum 
 | Custom code reserved | 400 | `{"error": "code is reserved"}` |
 | Malicious URL detected | 400 | `{"error": "URL flagged as potentially unsafe"}` |
 | Invalid tag name | 400 | `{"error": "invalid tag name: must be 1-50 alphanumeric, dash, or underscore"}` |
-| expires_in too large | 400 | `{"error": "expires_in must not exceed 31536000 seconds (365 days)"}` |
+| expires_in invalid | 400 | `{"error": "expires_in must be a positive integer, max 31536000 (365 days)"}` |
 | Rate limited | 429 | `{"error": "rate limit exceeded", "retry_after": 60}` |
 
 ### 6.3 Bulk Create
@@ -419,6 +419,8 @@ Only `is_active`, `expires_at`, and `tags` are mutable. `code` and `original_url
 
 When `tags` is provided, it replaces all existing tags for the link (full replacement, not merge).
 
+The UPDATE query must explicitly `SET updated_at = CURRENT_TIMESTAMP` (SQLite has no auto-update trigger). This also applies to the lazy `is_active = 0` write when an expired link is accessed via redirect (S6.1).
+
 **Response 200**: Updated link object. **404** if not found.
 
 ### 6.7 Delete Link
@@ -452,9 +454,13 @@ Authorization: Bearer <key>
 }
 ```
 
-For `24h` period, `clicks_by_day` returns hourly buckets instead:
+For `24h` period, `clicks_by_hour` replaces `clicks_by_day` (the field is absent, not null):
+
 ```json
 {
+  "link_id": 1,
+  "total_clicks": 1523,
+  "period_clicks": 87,
   "clicks_by_hour": [
     {"hour": "2026-03-26T14:00:00Z", "count": 12},
     {"hour": "2026-03-26T15:00:00Z", "count": 8}
@@ -480,7 +486,7 @@ A public route is also available:
 GET /:code/qr?size=256
 ```
 
-**Auth**: No. Returns the QR code for the short URL without requiring an API key. Handled by the routing middleware (see S14.5).
+**Auth**: No. Returns the QR code for the short URL without requiring an API key. The QR code is always returned regardless of link status (active, expired, or deactivated) — it simply encodes the URL string. Handled by the routing middleware (see S15.5).
 
 ### 6.10 List Tags
 
@@ -514,7 +520,16 @@ Authorization: Bearer <key>
 }
 ```
 
-Tag name must match `^[a-zA-Z0-9_-]{1,50}$`. Maximum 100 tags allowed; returns `400 {"error": "tag limit reached (max 100)"}` when exceeded. **Response 201**. **409** if name already exists.
+Tag name must match `^[a-zA-Z0-9_-]{1,50}$`. Maximum 100 tags allowed; returns `400 {"error": "tag limit reached (max 100)"}` when exceeded. **409** if name already exists.
+
+**Response 201**:
+```json
+{
+  "id": 1,
+  "name": "marketing",
+  "created_at": "2026-03-26T10:00:00Z"
+}
+```
 
 ### 6.12 Delete Tag
 
@@ -615,7 +630,9 @@ Redirect responses additionally:
 
 ### 9.2 Async Click Recording
 
-Redirect handler sends click data to a buffered channel (capacity configurable, default 10,000). A background goroutine batch-inserts clicks every 1 second or when the buffer reaches 500 items, whichever comes first. `click_count` on the `links` table is incremented in the same batch transaction.
+Redirect handler sends click data to a buffered channel (capacity configurable, default 10,000) using a **non-blocking send** (`select` with `default` case). If the channel is full, the click is dropped, a warning is logged, and a dropped-clicks counter is incremented. The redirect always succeeds regardless of buffer state.
+
+A background goroutine batch-inserts clicks every 1 second or when the buffer reaches 500 items, whichever comes first. `click_count` on the `links` table is incremented in the same batch transaction.
 
 ### 9.3 Connection Management
 
@@ -701,11 +718,11 @@ All errors return consistent JSON:
 | Status | Meaning |
 |--------|---------|
 | 400 | Validation error |
-| 413 | Request body too large |
 | 401 | Missing or invalid API key |
 | 404 | Resource not found |
 | 409 | Conflict (duplicate code or tag) |
 | 410 | Gone (expired or deactivated link) |
+| 413 | Request body too large |
 | 429 | Rate limited (includes `Retry-After` header) |
 | 500 | Internal error (generic message to client, full error logged) |
 
@@ -730,6 +747,7 @@ If `DATA_RETENTION_DAYS > 0`, a background goroutine runs daily at midnight UTC 
 - Tailwind CSS for styling
 - React Router (only `/` dashboard + 404)
 - `date-fns` for date formatting
+- Recharts for analytics bar chart
 
 ### 15.2 Pages
 
