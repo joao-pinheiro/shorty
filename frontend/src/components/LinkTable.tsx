@@ -1,5 +1,5 @@
 import { LinkRow } from './LinkRow';
-import type { Link } from '../types';
+import type { Link, TagWithCount } from '../types';
 
 interface LinkTableProps {
   links: Link[];
@@ -7,11 +7,13 @@ interface LinkTableProps {
   page: number;
   perPage: number;
   loading: boolean;
+  allTags: TagWithCount[];
   onPageChange: (page: number) => void;
   onDelete: (id: number) => Promise<void>;
   onToggleActive: (id: number, currentlyActive: boolean) => Promise<void>;
   onShowQR: (link: Link) => void;
   onAuthError: () => void;
+  onTagsUpdated: () => void;
 }
 
 export function LinkTable({
@@ -25,6 +27,8 @@ export function LinkTable({
   onToggleActive,
   onShowQR,
   onAuthError,
+  allTags,
+  onTagsUpdated,
 }: LinkTableProps) {
   const totalPages = Math.ceil(total / perPage);
 
@@ -60,10 +64,12 @@ export function LinkTable({
               <LinkRow
                 key={link.id}
                 link={link}
+                allTags={allTags}
                 onDelete={onDelete}
                 onToggleActive={onToggleActive}
                 onShowQR={onShowQR}
                 onAuthError={onAuthError}
+                onTagsUpdated={onTagsUpdated}
               />
             ))}
           </tbody>

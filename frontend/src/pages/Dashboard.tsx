@@ -106,11 +106,13 @@ export function Dashboard({ onAuthError }: DashboardProps) {
           page={page}
           perPage={perPage}
           loading={loading}
+          allTags={tags}
           onPageChange={setPage}
           onDelete={deleteLink}
           onToggleActive={toggleActive}
           onShowQR={handleShowQR}
           onAuthError={onAuthError}
+          onTagsUpdated={() => { refresh(); refetchTags(); }}
         />
       </div>
 
