@@ -426,7 +426,7 @@ func (s *SQLiteStore) BatchInsertClicks(ctx context.Context, events []ClickEvent
 
 	counts := make(map[int64]int)
 	for _, event := range events {
-		if _, err := insertStmt.ExecContext(ctx, event.LinkID, event.ClickedAt); err != nil {
+		if _, err := insertStmt.ExecContext(ctx, event.LinkID, event.ClickedAt.UTC().Format(time.RFC3339)); err != nil {
 			return fmt.Errorf("insert click: %w", err)
 		}
 		counts[event.LinkID]++
