@@ -6,3 +6,4 @@ bin/
 frontend/dist/
 frontend/node_modules/
 coverage.out
+handler_cov.out
