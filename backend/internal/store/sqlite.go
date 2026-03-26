@@ -151,38 +151,260 @@ func (s *SQLiteStore) Close() error {
 	return s.writeDB.Close()
 }
 
-// Stub implementations — will be filled in later phases.
+// Time parsing helpers for SQLite datetime values.
+
+func parseSQLiteTime(s string) (time.Time, error) {
+	for _, layout := range []string{
+		time.RFC3339,
+		"2006-01-02T15:04:05Z",
+		"2006-01-02 15:04:05",
+	} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("cannot parse time: %s", s)
+}
+
+func scanNullableTime(ns sql.NullString) *time.Time {
+	if !ns.Valid {
+		return nil
+	}
+	t, err := parseSQLiteTime(ns.String)
+	if err != nil {
+		return nil
+	}
+	return &t
+}
+
+func escapeLike(s string) string {
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "%", "\\%")
+	s = strings.ReplaceAll(s, "_", "\\_")
+	return s
+}
 
 func (s *SQLiteStore) CreateLink(ctx context.Context, code, originalURL string, expiresAt *string) (*model.Link, error) {
-	return nil, fmt.Errorf("not implemented")
+	query := `
+		INSERT INTO links (code, original_url, expires_at)
+		VALUES (?, ?, ?)
+		RETURNING id, code, original_url, created_at, expires_at, is_active, click_count, updated_at`
+
+	var link model.Link
+	var expiresAtStr sql.NullString
+	var isActive int
+
+	err := s.writeDB.QueryRowContext(ctx, query, code, originalURL, expiresAt).Scan(
+		&link.ID, &link.Code, &link.OriginalURL,
+		&link.CreatedAt, &expiresAtStr, &isActive,
+		&link.ClickCount, &link.UpdatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("insert link: %w", err)
+	}
+
+	link.IsActive = isActive == 1
+	link.ExpiresAt = scanNullableTime(expiresAtStr)
+
+	return &link, nil
 }
 
 func (s *SQLiteStore) GetLinkByCode(ctx context.Context, code string) (*model.Link, error) {
-	return nil, fmt.Errorf("not implemented")
+	return s.getLinkByFieldFromDB(ctx, s.readDB, "code", code)
 }
 
 func (s *SQLiteStore) GetLinkByID(ctx context.Context, id int64) (*model.Link, error) {
-	return nil, fmt.Errorf("not implemented")
+	return s.getLinkByFieldFromDB(ctx, s.readDB, "id", id)
+}
+
+func (s *SQLiteStore) getLinkByIDFromDB(ctx context.Context, db *sql.DB, id int64) (*model.Link, error) {
+	return s.getLinkByFieldFromDB(ctx, db, "id", id)
+}
+
+func (s *SQLiteStore) getLinkByFieldFromDB(ctx context.Context, db *sql.DB, field string, value interface{}) (*model.Link, error) {
+	query := fmt.Sprintf(
+		"SELECT id, code, original_url, created_at, expires_at, is_active, click_count, updated_at FROM links WHERE %s = ?",
+		field,
+	)
+
+	var link model.Link
+	var expiresAt sql.NullString
+	var isActive int
+
+	err := db.QueryRowContext(ctx, query, value).Scan(
+		&link.ID, &link.Code, &link.OriginalURL,
+		&link.CreatedAt, &expiresAt, &isActive,
+		&link.ClickCount, &link.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get link by %s: %w", field, err)
+	}
+
+	link.IsActive = isActive == 1
+	link.ExpiresAt = scanNullableTime(expiresAt)
+	return &link, nil
 }
 
 func (s *SQLiteStore) ListLinks(ctx context.Context, params ListParams) (*ListResult, error) {
-	return nil, fmt.Errorf("not implemented")
+	sortColumn := "created_at"
+	switch params.Sort {
+	case "created_at", "click_count", "expires_at":
+		sortColumn = params.Sort
+	case "":
+		sortColumn = "created_at"
+	default:
+		return nil, fmt.Errorf("invalid sort column")
+	}
+
+	orderDir := "DESC"
+	switch strings.ToLower(params.Order) {
+	case "asc":
+		orderDir = "ASC"
+	case "desc", "":
+		orderDir = "DESC"
+	default:
+		return nil, fmt.Errorf("invalid order direction")
+	}
+
+	var conditions []string
+	var args []interface{}
+
+	if params.Search != "" {
+		conditions = append(conditions, "(original_url LIKE '%' || ? || '%' ESCAPE '\\' OR code LIKE '%' || ? || '%' ESCAPE '\\')")
+		escaped := escapeLike(params.Search)
+		args = append(args, escaped, escaped)
+	}
+
+	if params.Active != nil {
+		if *params.Active {
+			conditions = append(conditions, "is_active = 1")
+		} else {
+			conditions = append(conditions, "is_active = 0")
+		}
+	}
+
+	if params.Tag != "" {
+		conditions = append(conditions,
+			"id IN (SELECT lt.link_id FROM link_tags lt JOIN tags t ON lt.tag_id = t.id WHERE t.name = ?)")
+		args = append(args, params.Tag)
+	}
+
+	whereClause := ""
+	if len(conditions) > 0 {
+		whereClause = "WHERE " + strings.Join(conditions, " AND ")
+	}
+
+	countQuery := "SELECT COUNT(*) FROM links " + whereClause
+	var total int
+	if err := s.readDB.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
+		return nil, fmt.Errorf("count links: %w", err)
+	}
+
+	offset := (params.Page - 1) * params.PerPage
+	dataQuery := fmt.Sprintf(
+		"SELECT id, code, original_url, created_at, expires_at, is_active, click_count, updated_at FROM links %s ORDER BY %s %s LIMIT ? OFFSET ?",
+		whereClause, sortColumn, orderDir,
+	)
+	dataArgs := append(args, params.PerPage, offset)
+
+	rows, err := s.readDB.QueryContext(ctx, dataQuery, dataArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("list links: %w", err)
+	}
+	defer rows.Close()
+
+	var links []model.Link
+	for rows.Next() {
+		var link model.Link
+		var expiresAt sql.NullString
+		var isActive int
+		if err := rows.Scan(
+			&link.ID, &link.Code, &link.OriginalURL,
+			&link.CreatedAt, &expiresAt, &isActive,
+			&link.ClickCount, &link.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan link: %w", err)
+		}
+		link.IsActive = isActive == 1
+		link.ExpiresAt = scanNullableTime(expiresAt)
+		links = append(links, link)
+	}
+
+	return &ListResult{Links: links, Total: total}, nil
 }
 
 func (s *SQLiteStore) UpdateLink(ctx context.Context, id int64, isActive *bool, expiresAt *string) (*model.Link, error) {
-	return nil, fmt.Errorf("not implemented")
+	var setClauses []string
+	var args []interface{}
+
+	if isActive != nil {
+		val := 0
+		if *isActive {
+			val = 1
+		}
+		setClauses = append(setClauses, "is_active = ?")
+		args = append(args, val)
+	}
+
+	if expiresAt != nil {
+		setClauses = append(setClauses, "expires_at = ?")
+		args = append(args, *expiresAt)
+	}
+
+	setClauses = append(setClauses, "updated_at = CURRENT_TIMESTAMP")
+
+	query := fmt.Sprintf(
+		"UPDATE links SET %s WHERE id = ?",
+		strings.Join(setClauses, ", "),
+	)
+	args = append(args, id)
+
+	result, err := s.writeDB.ExecContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("update link: %w", err)
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		return nil, ErrNotFound
+	}
+
+	return s.getLinkByIDFromDB(ctx, s.writeDB, id)
 }
 
 func (s *SQLiteStore) DeactivateExpiredLink(ctx context.Context, id int64) error {
-	return fmt.Errorf("not implemented")
+	_, err := s.writeDB.ExecContext(ctx,
+		"UPDATE links SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?", id)
+	return err
 }
 
 func (s *SQLiteStore) DeleteLink(ctx context.Context, id int64) error {
-	return fmt.Errorf("not implemented")
+	result, err := s.writeDB.ExecContext(ctx, "DELETE FROM links WHERE id = ?", id)
+	if err != nil {
+		return fmt.Errorf("delete link: %w", err)
+	}
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *SQLiteStore) CodeExists(ctx context.Context, code string) (bool, error) {
-	return false, fmt.Errorf("not implemented")
+	var exists int
+	err := s.readDB.QueryRowContext(ctx,
+		"SELECT 1 FROM links WHERE code = ?", code,
+	).Scan(&exists)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (s *SQLiteStore) BatchInsertClicks(ctx context.Context, events []ClickEvent) error {

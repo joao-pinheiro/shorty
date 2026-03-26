@@ -122,25 +122,33 @@ func main() {
 	go redirectLimiter.StartCleanup(cleanupCtx)
 	go defaultLimiter.StartCleanup(cleanupCtx)
 
-	// Suppress unused variable warnings — these will be used in later phases
-	_ = redirectLimiter
-	_ = defaultLimiter
+	// Create handlers
+	linkHandler := handler.NewLinkHandler(db, cfg)
+	redirectHandler := handler.NewRedirectHandler(db)
 
 	// Public routes — no auth required
-	e.GET("/api/health", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, map[string]string{
-			"status":  "ok",
-			"version": "1.0.0",
-		})
-	})
+	e.GET("/api/health", handler.HealthCheck)
 
 	// Authenticated API group (S5)
 	apiV1 := e.Group("/api/v1", handler.AuthMiddleware(cfg.APIKey))
 
-	// Placeholder routes for rate limiter wiring — handlers will be added in later phases
-	_ = apiV1
-	_ = createLinkLimiter
+	apiV1.POST("/links", linkHandler.Create,
+		handler.RateLimitMiddleware(createLinkLimiter, cfg.RateLimitEnabled))
+	apiV1.GET("/links", linkHandler.List,
+		handler.RateLimitMiddleware(defaultLimiter, cfg.RateLimitEnabled))
+	apiV1.GET("/links/:id", linkHandler.Get,
+		handler.RateLimitMiddleware(defaultLimiter, cfg.RateLimitEnabled))
+	apiV1.PATCH("/links/:id", linkHandler.Update,
+		handler.RateLimitMiddleware(defaultLimiter, cfg.RateLimitEnabled))
+	apiV1.DELETE("/links/:id", linkHandler.Delete,
+		handler.RateLimitMiddleware(defaultLimiter, cfg.RateLimitEnabled))
+
+	// Suppress unused variable — will be used in later phases
 	_ = bulkCreateLimiter
+
+	// Redirect route (no auth, rate limited)
+	e.GET("/:code", redirectHandler.Redirect,
+		handler.RateLimitMiddleware(redirectLimiter, cfg.RateLimitEnabled))
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	slog.Info("starting server", "addr", addr, "base_url", cfg.BaseURL)
