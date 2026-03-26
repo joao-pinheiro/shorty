@@ -560,7 +560,7 @@ Multi-layer validation in `urlcheck` package:
 
 1. **Parse**: `url.Parse()` must succeed
 2. **Scheme**: Must be `http` or `https`. Reject `javascript:`, `data:`, `ftp:`, etc.
-3. **Host**: Must have a non-empty host. Resolve the host to `net.IP` and reject if any of: `IsLoopback()`, `IsPrivate()`, `IsLinkLocalUnicast()`, `IsLinkLocalMulticast()`, or `IsUnspecified()` returns true. This covers IPv4 private ranges, IPv6 equivalents, IPv6-mapped IPv4 addresses (e.g. `::ffff:127.0.0.1`), and link-local addresses.
+3. **Host**: Must have a non-empty host. Reject the hostname `localhost` (case-insensitive). If the host is an IP address literal, parse with `net.ParseIP()` and reject if any of: `IsLoopback()`, `IsPrivate()`, `IsLinkLocalUnicast()`, `IsLinkLocalMulticast()`, or `IsUnspecified()` returns true. This covers IPv4 private ranges, IPv6 equivalents, IPv6-mapped IPv4 addresses (e.g. `::ffff:127.0.0.1`), and link-local addresses. Hostnames other than `localhost` are not DNS-resolved at creation time (DNS is unreliable and adds latency).
 4. **Length**: Max 2048 characters
 5. **Safe Browsing** (optional): If `GOOGLE_SAFE_BROWSING_API_KEY` is set, check against Google Safe Browsing API v4. If not configured, skip gracefully.
 
@@ -597,7 +597,7 @@ Echo `BodyLimit` middleware is configured at 1MB globally. Any request body exce
 - All user input trimmed of whitespace
 - URLs: strip trailing whitespace, normalize scheme to lowercase
 - Custom codes validated against regex
-- SQL injection prevented by parameterized queries only (no string interpolation)
+- SQL injection prevented by parameterized queries for all values. Query parameters that cannot be parameterized (ORDER BY column, sort direction, analytics period) must be validated against their allowed value whitelist before interpolation into the query string.
 - All API responses have `Content-Type: application/json`
 
 ### 8.4 CORS
