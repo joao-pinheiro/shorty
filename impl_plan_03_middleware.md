@@ -180,12 +180,12 @@ func RateLimitMiddleware(store *RateLimiterStore, enabled bool) echo.MiddlewareF
 
 			reservation := limiter.Reserve()
 			if !reservation.OK() {
-				return rateLimitResponse(c, limiter)
+				return rateLimitResponse(c, limiter, store.config)
 			}
 
 			if delay := reservation.Delay(); delay > 0 {
 				reservation.Cancel()
-				return rateLimitResponse(c, limiter)
+				return rateLimitResponse(c, limiter, store.config)
 			}
 
 			// Set rate limit response headers (S8.1)
@@ -196,8 +196,15 @@ func RateLimitMiddleware(store *RateLimiterStore, enabled bool) echo.MiddlewareF
 	}
 }
 
-func rateLimitResponse(c echo.Context, limiter *rate.Limiter) error {
-	retryAfter := int(60) // seconds
+func rateLimitResponse(c echo.Context, limiter *rate.Limiter, cfg RateLimitConfig) error {
+	// Compute Retry-After from the endpoint's configured rate.
+	// Rate is in requests/second, so 1/Rate gives seconds between requests.
+	// e.g. 10/min → Rate=10/60 → retryAfter=6s; 2/min → Rate=2/60 → retryAfter=30s
+	ratePerMinute := float64(cfg.Rate) * 60
+	retryAfter := int(60 / ratePerMinute)
+	if retryAfter < 1 {
+		retryAfter = 1
+	}
 	c.Response().Header().Set("Retry-After", strconv.Itoa(retryAfter))
 	c.Response().Header().Set("X-RateLimit-Limit", "0")
 	c.Response().Header().Set("X-RateLimit-Remaining", "0")
@@ -247,23 +254,18 @@ The exact Echo API for trusted proxy configuration:
 // If TRUSTED_PROXIES is set, use X-Forwarded-For with trust ranges.
 // If not set, use direct connection IP.
 if len(cfg.TrustedProxies) > 0 {
-	trustRanges := make([]net.IPNet, 0, len(cfg.TrustedProxies))
+	var trustOptions []echo.TrustOption
 	for _, cidr := range cfg.TrustedProxies {
 		_, ipNet, err := net.ParseCIDR(cidr)
 		if err != nil {
 			slog.Error("invalid trusted proxy CIDR", "cidr", cidr, "error", err)
 			os.Exit(1)
 		}
-		trustRanges = append(trustRanges, *ipNet)
+		trustOptions = append(trustOptions, echo.TrustIPRange(ipNet))
 	}
-	e.IPExtractor = echo.ExtractIPFromXFFHeader(
-		echo.TrustIPRange(trustRanges[0]),
-		// Add more if needed — or use a loop
-	)
+	e.IPExtractor = echo.ExtractIPFromXFFHeader(trustOptions...)
 }
 ```
-
-**Note**: Check Echo v4's actual API. `echo.ExtractIPFromXFFHeader` may accept variadic `TrustOption`. If not, implement a custom `IPExtractor` function.
 
 ---
 

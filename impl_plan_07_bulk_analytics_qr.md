@@ -271,7 +271,9 @@ func (h *AnalyticsHandler) Get(c echo.Context) error {
 
     period := c.QueryParam("period")
     if period == "" {
-        period = "7d" // sensible default
+        // When period is omitted, defaults to "7d". This is an implementation
+        // decision — the spec does not define default behavior for missing period.
+        period = "7d"
     }
     if !allowedPeriods[period] {
         return c.JSON(http.StatusBadRequest, errorResponse(
@@ -310,14 +312,14 @@ func (h *AnalyticsHandler) Get(c echo.Context) error {
     }
 
     // Get period click count
+    // For "all" period, use COUNT(*) from clicks table instead of click_count.
+    // total_clicks (from click_count) may differ from period_clicks (from actual rows)
+    // after data retention purges delete old click rows — click_count is a lifetime
+    // total that is never decremented.
     var periodClicks int
-    if period == "all" {
-        periodClicks = totalClicks
-    } else {
-        periodClicks, err = h.store.GetPeriodClickCount(ctx, id, since)
-        if err != nil {
-            return internalError(c, err)
-        }
+    periodClicks, err = h.store.GetPeriodClickCount(ctx, id, since) // zero time = no lower bound for "all"
+    if err != nil {
+        return internalError(c, err)
     }
 
     // Build response based on period

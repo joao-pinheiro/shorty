@@ -178,7 +178,53 @@ func (s *SQLiteStore) SetLinkTags(ctx context.Context, linkID int64, tagNames []
         return tx.Commit()
     }
 
-    // 2. Ensure all tags exist (INSERT OR IGNORE for idempotency)
+    // 2. Find which tags don't exist yet
+    existingTags := make(map[string]bool)
+    placeholders := make([]string, len(tagNames))
+    queryArgs := make([]interface{}, len(tagNames))
+    for i, name := range tagNames {
+        placeholders[i] = "?"
+        queryArgs[i] = name
+    }
+    rows, err := tx.QueryContext(ctx,
+        fmt.Sprintf(`SELECT name FROM tags WHERE name IN (%s)`,
+            strings.Join(placeholders, ",")),
+        queryArgs...)
+    if err != nil {
+        return err
+    }
+    for rows.Next() {
+        var name string
+        if err := rows.Scan(&name); err != nil {
+            rows.Close()
+            return err
+        }
+        existingTags[name] = true
+    }
+    rows.Close()
+
+    // Count new tags that will be created
+    newTagCount := 0
+    for _, name := range tagNames {
+        if !existingTags[name] {
+            newTagCount++
+        }
+    }
+
+    // 2b. Enforce 100-tag limit: check existing count + new tags
+    if newTagCount > 0 {
+        var existingCount int
+        err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM tags`).Scan(&existingCount)
+        if err != nil {
+            return err
+        }
+        if existingCount+newTagCount > 100 {
+            return fmt.Errorf("tag limit reached (max 100)")
+            // Handler should catch this and return 400 {"error": "tag limit reached (max 100)"}
+        }
+    }
+
+    // 3. Ensure all tags exist (INSERT OR IGNORE for idempotency)
     for _, name := range tagNames {
         _, err = tx.ExecContext(ctx,
             `INSERT OR IGNORE INTO tags (name) VALUES (?)`, name)
@@ -447,21 +493,25 @@ After URL validation and code generation, before returning:
 5. Include `"tags"` in the response JSON.
 
 ```go
-// Validate tag names before creating the link
+// Validate and trim tag names before creating the link
+var trimmedTags []string
 if len(req.Tags) > 0 {
+    trimmedTags = make([]string, 0, len(req.Tags))
     for _, name := range req.Tags {
-        if err := validateTagName(strings.TrimSpace(name)); err != nil {
+        trimmed := strings.TrimSpace(name)
+        if err := validateTagName(trimmed); err != nil {
             return c.JSON(http.StatusBadRequest, errorResponse(
                 "invalid tag name: must be 1-50 alphanumeric, dash, or underscore"))
         }
+        trimmedTags = append(trimmedTags, trimmed)
     }
 }
 
 // ... create link ...
 
-// Set tags after link creation
-if len(req.Tags) > 0 {
-    if err := h.store.SetLinkTags(ctx, link.ID, req.Tags); err != nil {
+// Set tags after link creation — pass trimmedTags (not req.Tags)
+if len(trimmedTags) > 0 {
+    if err := h.store.SetLinkTags(ctx, link.ID, trimmedTags); err != nil {
         return internalError(c, err)
     }
 }
@@ -483,13 +533,17 @@ When `Tags` is non-nil, validate all names, then call `SetLinkTags`. An empty sl
 
 ```go
 if req.Tags != nil {
+    trimmedTags := make([]string, 0, len(*req.Tags))
     for _, name := range *req.Tags {
-        if err := validateTagName(strings.TrimSpace(name)); err != nil {
+        trimmed := strings.TrimSpace(name)
+        if err := validateTagName(trimmed); err != nil {
             return c.JSON(http.StatusBadRequest, errorResponse(
                 "invalid tag name: must be 1-50 alphanumeric, dash, or underscore"))
         }
+        trimmedTags = append(trimmedTags, trimmed)
     }
-    if err := h.store.SetLinkTags(ctx, id, *req.Tags); err != nil {
+    // Pass trimmedTags (not *req.Tags) to store trimmed values
+    if err := h.store.SetLinkTags(ctx, id, trimmedTags); err != nil {
         return internalError(c, err)
     }
 }

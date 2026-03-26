@@ -78,6 +78,7 @@ type Runner struct {
     store         store.Store
     retentionDays int
     done          chan struct{}
+    wg            sync.WaitGroup
     logger        *slog.Logger
 }
 
@@ -97,12 +98,17 @@ func New(s store.Store, retentionDays int, logger *slog.Logger) *Runner {
 // Start begins the background retention goroutine.
 // It runs the first purge at the next midnight UTC, then daily.
 func (r *Runner) Start() {
-    go r.run()
+    r.wg.Add(1)
+    go func() {
+        defer r.wg.Done()
+        r.run()
+    }()
 }
 
-// Stop signals the goroutine to stop and waits for it to finish.
+// Stop signals the goroutine to stop and blocks until it exits.
 func (r *Runner) Stop() {
     close(r.done)
+    r.wg.Wait() // block until goroutine exits
 }
 
 func (r *Runner) run() {

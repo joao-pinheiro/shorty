@@ -55,7 +55,7 @@ Called by the redirect handler. Uses `select` with `default` to never block (S9.
 // a warning is logged, and the dropped counter is incremented (S9.2).
 func (r *Recorder) Record(linkID int64) {
 	select {
-	case r.clickCh <- store.ClickEvent{LinkID: linkID}:
+	case r.clickCh <- store.ClickEvent{LinkID: linkID, ClickedAt: time.Now()}:
 		// sent
 	default:
 		dropped := r.droppedCount.Add(1)
@@ -194,8 +194,8 @@ func (s *SQLiteStore) BatchInsertClicks(ctx context.Context, events []store.Clic
 	}
 	defer tx.Rollback()
 
-	// 1. Batch-insert click rows
-	insertStmt, err := tx.PrepareContext(ctx, "INSERT INTO clicks (link_id) VALUES (?)")
+	// 1. Batch-insert click rows with the original click timestamp
+	insertStmt, err := tx.PrepareContext(ctx, "INSERT INTO clicks (link_id, clicked_at) VALUES (?, ?)")
 	if err != nil {
 		return fmt.Errorf("prepare insert: %w", err)
 	}
@@ -204,15 +204,17 @@ func (s *SQLiteStore) BatchInsertClicks(ctx context.Context, events []store.Clic
 	// 2. Aggregate counts per link_id
 	counts := make(map[int64]int)
 	for _, event := range events {
-		if _, err := insertStmt.ExecContext(ctx, event.LinkID); err != nil {
+		if _, err := insertStmt.ExecContext(ctx, event.LinkID, event.ClickedAt); err != nil {
 			return fmt.Errorf("insert click: %w", err)
 		}
 		counts[event.LinkID]++
 	}
 
-	// 3. Increment click_count on links table + update updated_at (S9.2)
+	// 3. Increment click_count on links table (S9.2)
+	// Note: updated_at is NOT bumped here — per S6.6, updated_at is only set
+	// for PATCH operations and lazy deactivation (S6.1), not click recording.
 	updateStmt, err := tx.PrepareContext(ctx,
-		"UPDATE links SET click_count = click_count + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+		"UPDATE links SET click_count = click_count + ? WHERE id = ?")
 	if err != nil {
 		return fmt.Errorf("prepare update: %w", err)
 	}
@@ -316,7 +318,18 @@ cancel() // cancels the context for limiter cleanup goroutines
 
 // 3. Drain click channel and flush remaining batch (S10 step 3)
 recorderCancel() // signals the recorder to drain and flush
-recorder.Stop()  // waits for flush to complete
+drainDone := make(chan struct{})
+go func() {
+	recorder.Stop() // drains channel and flushes
+	close(drainDone)
+}()
+select {
+case <-drainDone:
+	slog.Info("click buffer drained successfully")
+case <-time.After(5 * time.Second):
+	slog.Warn("click buffer drain timed out, some clicks may be lost")
+	os.Exit(1)
+}
 
 // 4. Close database connections (S10 step 4)
 if err := db.Close(); err != nil {
@@ -343,9 +356,12 @@ Already defined in Phase 1's store interface. Confirm it exists:
 
 ```go
 type ClickEvent struct {
-	LinkID int64
+	LinkID    int64
+	ClickedAt time.Time
 }
 ```
+
+Set `ClickedAt: time.Now()` when creating the event in the redirect handler so the timestamp reflects the actual click time, not the batch flush time.
 
 ---
 

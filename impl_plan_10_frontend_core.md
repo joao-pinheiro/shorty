@@ -518,7 +518,8 @@ interface LinkRowProps {
   onDelete: (id: number) => Promise<void>;
   onToggleActive: (id: number, currentlyActive: boolean) => Promise<void>;
   onShowQR: (link: Link) => void;
-  onShowAnalytics: (link: Link) => void;
+  // Note: Analytics is handled via row-level state, not a parent callback.
+  // AnalyticsPanel (Phase 11) will be rendered inline beneath the row when expanded.
 }
 
 export function LinkRow({
@@ -526,10 +527,10 @@ export function LinkRow({
   onDelete,
   onToggleActive,
   onShowQR,
-  onShowAnalytics,
 }: LinkRowProps) {
   const [deleting, setDeleting] = useState(false);
   const [toggling, setToggling] = useState(false);
+  const [showAnalytics, setShowAnalytics] = useState(false);
 
   const handleDelete = useCallback(async () => {
     if (!confirm('Delete this link? This cannot be undone.')) return;
@@ -558,6 +559,7 @@ export function LinkRow({
   const isExpired = link.expires_at && new Date(link.expires_at) < new Date();
 
   return (
+    <>
     <tr className="border-b hover:bg-gray-50">
       {/* Short URL */}
       <td className="px-4 py-3">
@@ -633,7 +635,7 @@ export function LinkRow({
             QR
           </button>
           <button
-            onClick={() => onShowAnalytics(link)}
+            onClick={() => setShowAnalytics(!showAnalytics)}
             className="text-xs text-gray-500 hover:text-gray-700"
             title="Analytics"
           >
@@ -656,9 +658,20 @@ export function LinkRow({
         </div>
       </td>
     </tr>
+    {showAnalytics && (
+      <tr>
+        <td colSpan={7} className="px-4 py-3 bg-gray-50">
+          {/* AnalyticsPanel (Phase 11) rendered inline when expanded */}
+          <AnalyticsPanel linkId={link.id} />
+        </td>
+      </tr>
+    )}
+    </>
   );
 }
 ```
+
+> **Note**: The component's top-level return must wrap both `<tr>` elements in a `<React.Fragment>` (`<>...</>`).
 
 ---
 
@@ -680,7 +693,8 @@ interface LinkTableProps {
   onDelete: (id: number) => Promise<void>;
   onToggleActive: (id: number, currentlyActive: boolean) => Promise<void>;
   onShowQR: (link: Link) => void;
-  onShowAnalytics: (link: Link) => void;
+  // Note: onShowAnalytics removed — LinkRow manages its own expanded state
+  // and renders AnalyticsPanel (Phase 11) inline beneath the row.
 }
 
 export function LinkTable({
@@ -693,7 +707,6 @@ export function LinkTable({
   onDelete,
   onToggleActive,
   onShowQR,
-  onShowAnalytics,
 }: LinkTableProps) {
   const totalPages = Math.ceil(total / perPage);
 
@@ -732,7 +745,6 @@ export function LinkTable({
                 onDelete={onDelete}
                 onToggleActive={onToggleActive}
                 onShowQR={onShowQR}
-                onShowAnalytics={onShowAnalytics}
               />
             ))}
           </tbody>

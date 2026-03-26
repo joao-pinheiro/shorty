@@ -198,6 +198,11 @@ func CatchAllMiddleware(
 				return next(c)
 			}
 
+			// Set security headers INSIDE the catch-all middleware before any return,
+			// rather than relying on a separate middleware (ensures headers are set
+			// regardless of middleware ordering).
+			c.Response().Header().Set("X-Content-Type-Options", "nosniff")
+
 			// Normalize: strip trailing slash (S19)
 			if len(path) > 1 && strings.HasSuffix(path, "/") {
 				path = strings.TrimRight(path, "/")
@@ -220,8 +225,8 @@ func CatchAllMiddleware(
 				// Look up link (no status check — QR always returned per S6.9)
 				link, err := store.GetLinkByCode(c.Request().Context(), code)
 				if err != nil {
-					// Not found → SPA fallback (not a known code)
-					return frontend.ServeIndex(c)
+					// Not found → 404, NOT SPA fallback (path matched short code pattern)
+					return c.JSON(http.StatusNotFound, map[string]string{"error": "not found"})
 				}
 
 				// Parse optional size param
@@ -253,8 +258,8 @@ func CatchAllMiddleware(
 
 				link, err := store.GetLinkByCode(c.Request().Context(), code)
 				if err != nil {
-					// Not a known short code → SPA fallback
-					return frontend.ServeIndex(c)
+					// Not a known short code → 404, NOT SPA fallback (path matched short code pattern)
+					return c.JSON(http.StatusNotFound, map[string]string{"error": "not found"})
 				}
 
 				// Check active/expired status (S6.1)
@@ -283,7 +288,8 @@ func CatchAllMiddleware(
 				return c.Redirect(http.StatusFound, link.OriginalURL)
 			}
 
-			// 4. Fallback: serve index.html for SPA routing (S15.5)
+			// 4. Fallback: path doesn't match short code pattern (e.g., /dashboard, /settings)
+			// → serve index.html for SPA routing (S15.5)
 			return frontend.ServeIndex(c)
 		}
 	}
@@ -295,7 +301,7 @@ func CatchAllMiddleware(
 - **`/api/*` is skipped entirely** — Echo routes handle those. The middleware calls `next(c)` for API paths.
 - **Static file check is first** so that `assets/index-abc123.js` is served directly without hitting the DB.
 - **QR pattern is checked before generic code pattern** because `/:code/qr` would also match `codeRegex` if "qr" were a valid code.
-- **Unknown codes fall through to SPA** rather than returning 404. This is intentional — the SPA has its own NotFound page for routes it doesn't handle.
+- **Unknown codes return `404 {"error": "not found"}`** rather than falling through to SPA. Only paths that do NOT match the short code regex (e.g., `/dashboard`, `/settings`) fall through to SPA. This cleanly separates SPA routes from code lookups.
 - **Rate limiting** is applied to redirect and public QR but NOT to static file serving or SPA fallback.
 
 ---
@@ -522,7 +528,8 @@ In production (served by Go), the Vite proxy is not used — all requests go to 
    - Invalid size values ignored (uses default 256).
 
 6. **SPA fallback**:
-   - Visit `http://localhost:8080/nonexistent-path` (not a code, not a file) — serves index.html, React NotFound page renders.
+   - Visit `http://localhost:8080/dashboard` (not a code pattern, not a file) — serves index.html, React app renders.
+   - Visit `http://localhost:8080/abc123` where `abc123` is not a real code — returns `404 {"error": "not found"}` (NOT SPA fallback, because path matches short code regex).
 
 7. **Trailing slash normalization** (S19):
    - `http://localhost:8080/{code}/` redirects same as `http://localhost:8080/{code}`.

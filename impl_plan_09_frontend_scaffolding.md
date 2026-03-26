@@ -59,6 +59,8 @@ export default defineConfig({
 
 The proxy configuration routes `/api` requests to the Go backend during development.
 
+> **Note**: Short URL redirects (`GET /:code`) and public QR (`GET /:code/qr`) cannot be proxied through Vite without catching all routes. Test these directly against the backend at `http://localhost:8080`.
+
 ---
 
 ## Step 3: TypeScript Types (`frontend/src/types.ts`)
@@ -302,9 +304,32 @@ class ApiClient {
     );
   }
 
-  // QR Code URL (S6.9) — returns URL string, not a fetch
-  getQRCodeUrl(id: number, size: number = 256): string {
-    return `${BASE_URL}/api/v1/links/${id}/qr?size=${size}`;
+  // QR Code — authenticated route (management UI).
+  // Returns a Blob because the API route requires auth headers,
+  // so a plain URL cannot be used in an <img src="...">.
+  // The QRCodeModal should use this and create an object URL:
+  //   const blob = await api.getQRCodeBlob(id, size);
+  //   const objectUrl = URL.createObjectURL(blob);
+  async getQRCodeBlob(id: number, size: number = 256): Promise<Blob> {
+    const key = getApiKey();
+    const headers: Record<string, string> = {};
+    if (key) {
+      headers['Authorization'] = `Bearer ${key}`;
+    }
+    const res = await fetch(`${BASE_URL}/api/v1/links/${id}/qr?size=${size}`, { headers });
+    if (res.status === 401) {
+      throw new AuthError('unauthorized');
+    }
+    if (!res.ok) {
+      const data = await res.json();
+      throw new ApiRequestError(data.error, res.status);
+    }
+    return res.blob();
+  }
+
+  // QR Code — public route (no auth needed, can be used directly in img src)
+  getPublicQRCodeUrl(code: string, size: number = 256): string {
+    return `${BASE_URL}/${code}/qr?size=${size}`;
   }
 
   // Tags (S6.10)

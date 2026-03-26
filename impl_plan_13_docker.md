@@ -69,6 +69,9 @@ RUN cd backend && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     -o /shorty \
     ./cmd/shorty
 
+# Create empty /data directory for the final stage (distroless has no mkdir)
+RUN mkdir -p /data
+
 # ============================================================
 # Stage 3: Minimal runtime
 # ============================================================
@@ -80,7 +83,10 @@ COPY --from=backend-builder /shorty /shorty
 # Copy migrations (needed at runtime for auto-migration on startup)
 COPY --from=backend-builder /app/backend/migrations /migrations
 
-# SQLite data directory
+# SQLite data directory with correct ownership for nonroot user.
+# Distroless has no shell/mkdir, so we must create /data in a builder stage.
+# Add this to the backend-builder stage: RUN mkdir -p /data
+COPY --from=backend-builder --chown=65534:65534 /data /data
 VOLUME ["/data"]
 
 # Default port
@@ -206,31 +212,7 @@ volumes:
 - **`DB_PATH=/data/shorty.db`**: Points to the mounted volume so data persists across container restarts.
 - **`volumes: shorty-data`**: Named Docker volume. Data persists until explicitly removed with `docker volume rm`.
 - **`restart: unless-stopped`**: Auto-restart on crash, but not after explicit `docker stop`.
-- **Healthcheck**: Assumes the binary supports a `-healthcheck` flag that hits `/api/health` and exits 0/1. If not implemented, use a simpler alternative:
-  ```yaml
-  healthcheck:
-    test: ["NONE"]
-  ```
-  Or remove the healthcheck entirely since distroless has no `curl` or `wget`. Alternative: use the Go binary itself as a health check client (add a `-healthcheck` CLI flag that makes an HTTP request to `localhost:PORT/api/health`).
-
-### Healthcheck Alternative (without -healthcheck flag)
-
-Since distroless has no shell or HTTP clients, either:
-
-1. **Add `-healthcheck` flag to the Go binary** (recommended):
-   ```go
-   if *healthcheck {
-       resp, err := http.Get(fmt.Sprintf("http://localhost:%s/api/health", cfg.Port))
-       if err != nil || resp.StatusCode != 200 {
-           os.Exit(1)
-       }
-       os.Exit(0)
-   }
-   ```
-
-2. **Remove healthcheck from compose** and rely on restart policy.
-
-3. **Use a multi-stage runtime with shell** (not recommended — defeats purpose of distroless).
+- **Healthcheck**: Requires the `-healthcheck` flag implemented in Step 6 (REQUIRED). The binary itself acts as the health check client, hitting `localhost:PORT/api/health` and exiting 0/1. This is necessary because distroless has no `curl` or `wget`.
 
 ---
 
@@ -386,9 +368,11 @@ docker-clean:
 
 ---
 
-## Step 6: Healthcheck CLI Flag (Optional but Recommended)
+## Step 6: Healthcheck CLI Flag (REQUIRED)
 
 **File**: `backend/cmd/shorty/main.go` (modify)
+
+**This step is REQUIRED** — the docker-compose.yml healthcheck depends on the `-healthcheck` flag. Implement this as part of Step 1 or Step 2 (during the main binary build), not as an afterthought.
 
 Add a `-healthcheck` flag so the Docker healthcheck can work in distroless:
 
@@ -457,10 +441,7 @@ CORS_ALLOWED_ORIGINS=https://sho.rt  # Match public URL
 ### Volume Backup
 
 ```bash
-# Backup SQLite database
-docker compose exec shorty cat /data/shorty.db > backup.db
-
-# Or copy from volume directly
+# Backup (distroless has no shell — use docker cp):
 docker cp shorty:/data/shorty.db ./backup.db
 ```
 

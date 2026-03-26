@@ -138,6 +138,19 @@ func (s *SQLiteStore) GetLinkByID(ctx context.Context, id int64) (*model.Link, e
 }
 ```
 
+### `escapeLike` Helper
+
+Escapes LIKE wildcards in user-supplied search strings to prevent unintended pattern matching.
+
+```go
+func escapeLike(s string) string {
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "%", "\\%")
+	s = strings.ReplaceAll(s, "_", "\\_")
+	return s
+}
+```
+
 ### `ListLinks`
 
 Implements pagination, search, sort, active filter, and tag filter (S6.4).
@@ -171,9 +184,9 @@ func (s *SQLiteStore) ListLinks(ctx context.Context, params ListParams) (*ListRe
 	var args []interface{}
 
 	if params.Search != "" {
-		conditions = append(conditions, "(original_url LIKE ? OR code LIKE ?)")
-		pattern := "%" + params.Search + "%"
-		args = append(args, pattern, pattern)
+		conditions = append(conditions, "(original_url LIKE '%' || ? || '%' ESCAPE '\\' OR code LIKE '%' || ? || '%' ESCAPE '\\')")
+		escaped := escapeLike(params.Search)
+		args = append(args, escaped, escaped)
 	}
 
 	if params.Active != nil {
@@ -483,6 +496,9 @@ Continue the handler:
 	}
 
 	// 7. Set tags if provided (Phase 6 will implement SetLinkTags)
+	// Note: Tag operations (SetLinkTags, GetLinkTags) return errors until Phase 6
+	// implementation. Links created without tags work correctly. Links created
+	// WITH tags will fail with 500 until Phase 6.
 	if len(req.Tags) > 0 {
 		if err := h.store.SetLinkTags(c.Request().Context(), link.ID, req.Tags); err != nil {
 			slog.Error("set link tags failed", "error", err)
@@ -622,6 +638,13 @@ func (h *LinkHandler) Update(c echo.Context) error {
 	}
 	if existing == nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "not found"})
+	}
+
+	// Validate expires_at is valid RFC3339 if provided
+	if req.ExpiresAt != nil {
+		if _, err := time.Parse(time.RFC3339, *req.ExpiresAt); err != nil {
+			return c.JSON(400, map[string]string{"error": "expires_at must be a valid RFC3339 timestamp"})
+		}
 	}
 
 	// Validate tag names if provided

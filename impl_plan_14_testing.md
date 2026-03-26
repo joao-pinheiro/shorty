@@ -635,6 +635,45 @@ func TestE2E_ConcurrentRedirects(t *testing.T)
 // 5. Verify click_count ~= 100 (may be less if buffer drops)
 ```
 
+### Data Retention Test
+
+```go
+func TestDataRetention_PurgesOldClicks(t *testing.T)
+// - Create link, insert clicks with old timestamps (> retention days ago)
+// - Run retention purge
+// - Verify old clicks deleted, recent clicks remain
+// - Verify click_count on link is NOT decremented (S14)
+```
+
+### Graceful Shutdown Test
+
+```go
+func TestGracefulShutdown_FlushesClickBuffer(t *testing.T)
+// - Start server, create link, send several redirects
+// - Send SIGINT to server process
+// - Wait for exit
+// - Open DB directly and verify all clicks were flushed
+// - Verify exit code 0 on clean shutdown
+```
+
+### Rate Limit Response Test
+
+```go
+func TestRateLimit_RetryAfterHeader(t *testing.T)
+// - Exceed rate limit on redirect endpoint
+// - Verify 429 response includes Retry-After header
+// - Verify Retry-After value is a positive integer (seconds)
+```
+
+### Sort Column Whitelist Test
+
+```go
+func TestListLinks_InvalidSortColumn(t *testing.T)
+// - GET /api/v1/links?sort=DROP_TABLE → 400 {"error": "invalid sort column"}
+// - Verify handler-level validation rejects sort values not in whitelist
+// - Allowed values: created_at, click_count, expires_at
+```
+
 ---
 
 ## Part 2: Frontend Testing
