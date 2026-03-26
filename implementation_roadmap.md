@@ -19,8 +19,8 @@ This roadmap breaks the specification into ordered implementation phases. Each p
    - Open read and write connection pools with correct `SetMaxOpenConns` (S9.3)
    - Apply PRAGMAs on each connection (S3.5)
    - Migration runner: read `schema_version`, apply pending migrations in transactions (S3.4)
-8. Implement `backend/cmd/shorty/main.go` — load config, open store, start Echo server on configured port
-9. Create `Makefile` with `dev-backend` target (S17.1)
+8. Implement `backend/cmd/shorty/main.go` — load config, open store, start Echo server on configured port. Support `-migrate` CLI flag to run migrations and exit without starting the server (S17.1)
+9. Create `Makefile` with `dev-backend` and `migrate` targets (S17.1)
 
 ### Verify
 - `make dev-backend` starts the server (with `API_KEY` set)
@@ -71,12 +71,13 @@ This roadmap breaks the specification into ordered implementation phases. Each p
    - **Auth middleware**: extract `Authorization: Bearer` header, constant-time compare with config API key, skip for unauthenticated routes (S5)
    - **Rate limit middleware**: per-IP token bucket with `golang.org/x/time/rate`, IP extraction via Echo `IPExtractor` respecting `TRUSTED_PROXIES`, per-endpoint rate configs, stale limiter purge goroutine, rate limit response headers (S8.1)
    - **Security headers middleware**: `X-Content-Type-Options: nosniff` on all responses, `X-Frame-Options: DENY` on redirects (S8.5)
-2. Configure Echo built-in middleware in `main.go`:
+2. Configure custom `echo.HTTPErrorHandler` to ensure all errors (including Echo's built-in 404, 405, etc.) return consistent `{"error": "message"}` JSON format (S13)
+3. Configure Echo built-in middleware in `main.go`:
    - `middleware.Recover()` (S13)
    - `middleware.CORSWithConfig()` (S8.4)
    - `middleware.BodyLimit("1M")` (S8.2)
    - Request logger via `slog` (S12)
-3. Register middleware on Echo instance
+4. Register middleware on Echo instance
 
 ### Verify
 - Request without `Authorization` header to `/api/v1/links` returns 401
@@ -104,7 +105,7 @@ This roadmap breaks the specification into ordered implementation phases. Each p
    - `DeactivateExpiredLink(ctx, id) error` — lazy is_active=0 with updated_at (S6.1)
    - `DeleteLink(ctx, id) error` — cascade (S6.7)
 2. Implement `internal/handler/links.go`:
-   - `POST /api/v1/links` — validate URL (urlcheck), validate custom code (regex, reserved words, collision), generate code (shortcode), validate expires_in (positive, max 365d), create in store (S6.2)
+   - `POST /api/v1/links` — validate URL (urlcheck), validate custom code (regex, reserved words, collision), generate code (shortcode), validate expires_in (positive, max 365d), create in store, construct `short_url` from `BASE_URL` + code in response (S6.2)
    - `GET /api/v1/links` — parse query params, call store.ListLinks (S6.4)
    - `GET /api/v1/links/:id` — return link, expired links returned normally (S6.5)
    - `PATCH /api/v1/links/:id` — validate mutable fields, update (S6.6)
@@ -112,8 +113,9 @@ This roadmap breaks the specification into ordered implementation phases. Each p
 3. Implement `internal/handler/redirect.go`:
    - `GET /:code` — lookup by code, check active/expired, 302 redirect, Cache-Control header (S6.1)
    - Note: click recording is deferred to Phase 5
-4. Implement `internal/handler/health.go` — `GET /api/health` (S6.13)
-5. Register all routes in `main.go`
+4. Implement link response builder — constructs `short_url` field from `BASE_URL` config + code for all link responses (S6.2, S6.4, S6.5, S6.6)
+5. Implement `internal/handler/health.go` — `GET /api/health` (S6.13)
+6. Register all routes in `main.go`
 
 ### Verify
 - Create a link via `curl -X POST`, verify 201 response with generated code
@@ -216,7 +218,7 @@ This roadmap breaks the specification into ordered implementation phases. Each p
 4. Implement `internal/qr/qr.go` — generate PNG using `go-qrcode`, accept size param (min 128, max 1024, default 256) (S6.9)
 5. Add QR handler to links.go or a separate file:
    - `GET /api/v1/links/:id/qr` — auth required, 404 if link not found
-6. Wire public `/:code/qr` into routing middleware (Phase 9 will handle this, but the QR generation function is ready)
+6. Wire public `/:code/qr` into routing middleware (Phase 12 will handle this, but the QR generation function is ready)
 
 ### Verify
 - Bulk create 3 URLs (1 invalid), verify response with total/succeeded/failed and per-item results
@@ -359,6 +361,7 @@ This roadmap breaks the specification into ordered implementation phases. Each p
 ### Steps
 1. Add `//go:embed` directive for `frontend/dist/` in a Go file (S15.5)
 2. Implement the catch-all routing middleware in `middleware.go` or a dedicated file:
+   - Strip trailing slashes from paths (S19)
    - Check if path matches embedded static file → serve it
    - Check if path matches `/:code/qr` → generate and serve QR (no auth, no link status check) (S6.9)
    - Check if path matches a short code in DB → 302 redirect (S6.1)
