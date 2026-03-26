@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -12,8 +13,10 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+	echomw "github.com/labstack/echo/v4/middleware"
 
 	"shorty/internal/config"
+	"shorty/internal/handler"
 	"shorty/internal/migrations"
 	"shorty/internal/store"
 )
@@ -59,13 +62,85 @@ func main() {
 	e.HideBanner = true
 	e.HidePort = true
 
-	// Health check — no auth required (S6.13)
+	// Custom error handler (S13)
+	e.HTTPErrorHandler = handler.CustomHTTPErrorHandler
+
+	// IP extraction with trusted proxies (S8.1)
+	if len(cfg.TrustedProxies) > 0 {
+		var trustOptions []echo.TrustOption
+		for _, cidr := range cfg.TrustedProxies {
+			_, ipNet, err := net.ParseCIDR(cidr)
+			if err != nil {
+				slog.Error("invalid trusted proxy CIDR", "cidr", cidr, "error", err)
+				os.Exit(1)
+			}
+			trustOptions = append(trustOptions, echo.TrustIPRange(ipNet))
+		}
+		e.IPExtractor = echo.ExtractIPFromXFFHeader(trustOptions...)
+	}
+
+	// 1. Recover from panics (S13)
+	e.Use(echomw.Recover())
+
+	// 2. Security headers (S8.5)
+	e.Use(handler.SecurityHeadersMiddleware())
+
+	// 3. Body limit (S8.2)
+	e.Use(echomw.BodyLimit("1M"))
+
+	// 4. CORS (S8.4)
+	e.Use(echomw.CORSWithConfig(echomw.CORSConfig{
+		AllowOrigins: cfg.CORSAllowedOrigins,
+		AllowMethods: []string{
+			http.MethodGet,
+			http.MethodPost,
+			http.MethodPatch,
+			http.MethodDelete,
+			http.MethodOptions,
+		},
+		AllowHeaders: []string{
+			"Content-Type",
+			"Authorization",
+		},
+		MaxAge: 86400,
+	}))
+
+	// 5. Request logging (S12)
+	e.Use(handler.RequestLoggerMiddleware())
+
+	// 6. Rate limiter stores — per endpoint category
+	createLinkLimiter := handler.NewRateLimiterStore(handler.RateLimitCreateLink)
+	bulkCreateLimiter := handler.NewRateLimiterStore(handler.RateLimitBulkCreate)
+	redirectLimiter := handler.NewRateLimiterStore(handler.RateLimitRedirect)
+	defaultLimiter := handler.NewRateLimiterStore(handler.RateLimitDefault)
+
+	// Start cleanup goroutines
+	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
+	defer cleanupCancel()
+	go createLinkLimiter.StartCleanup(cleanupCtx)
+	go bulkCreateLimiter.StartCleanup(cleanupCtx)
+	go redirectLimiter.StartCleanup(cleanupCtx)
+	go defaultLimiter.StartCleanup(cleanupCtx)
+
+	// Suppress unused variable warnings — these will be used in later phases
+	_ = redirectLimiter
+	_ = defaultLimiter
+
+	// Public routes — no auth required
 	e.GET("/api/health", func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{
 			"status":  "ok",
 			"version": "1.0.0",
 		})
 	})
+
+	// Authenticated API group (S5)
+	apiV1 := e.Group("/api/v1", handler.AuthMiddleware(cfg.APIKey))
+
+	// Placeholder routes for rate limiter wiring — handlers will be added in later phases
+	_ = apiV1
+	_ = createLinkLimiter
+	_ = bulkCreateLimiter
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	slog.Info("starting server", "addr", addr, "base_url", cfg.BaseURL)
@@ -85,6 +160,8 @@ func main() {
 	slog.Info("shutting down server")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+
+	cleanupCancel()
 
 	if err := e.Shutdown(ctx); err != nil {
 		slog.Error("server forced to shutdown", "error", err)
