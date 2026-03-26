@@ -1,0 +1,7 @@
+.env
+*.db
+*.db-wal
+*.db-shm
+bin/
+frontend/dist/
+frontend/node_modules/
