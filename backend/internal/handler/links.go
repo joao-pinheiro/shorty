@@ -117,6 +117,8 @@ func (h *LinkHandler) Create(c echo.Context) error {
 
 	if len(trimmedTags) > 0 {
 		if err := h.store.SetLinkTags(c.Request().Context(), link.ID, trimmedTags); err != nil {
+			// Clean up orphaned link to avoid consuming the short code
+			_ = h.store.DeleteLink(c.Request().Context(), link.ID)
 			slog.Error("set link tags failed", "error", err)
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal server error"})
 		}
@@ -272,15 +274,17 @@ func (h *LinkHandler) Update(c echo.Context) error {
 			slog.Error("set link tags failed", "error", err)
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal server error"})
 		}
+		// Use the tags we just set — avoids read-after-write inconsistency with readDB
+		link.Tags = *req.Tags
+	} else {
+		// Tags not being updated — read current tags
+		tags, err := h.store.GetLinkTags(c.Request().Context(), link.ID)
+		if err != nil {
+			slog.Error("get link tags failed", "error", err)
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal server error"})
+		}
+		link.Tags = tags
 	}
-
-	// Fetch current tags
-	tags, err := h.store.GetLinkTags(c.Request().Context(), link.ID)
-	if err != nil {
-		slog.Error("get link tags failed", "error", err)
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal server error"})
-	}
-	link.Tags = tags
 
 	link.ShortURL = h.config.BaseURL + "/" + link.Code
 	if link.Tags == nil {

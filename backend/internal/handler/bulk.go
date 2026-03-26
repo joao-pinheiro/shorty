@@ -157,6 +157,8 @@ func (h *BulkHandler) processOneLink(ctx context.Context, item bulkCreateItem) (
 
 	if len(trimmedTags) > 0 {
 		if err := h.store.SetLinkTags(ctx, link.ID, trimmedTags); err != nil {
+			// Clean up orphaned link
+			_ = h.store.DeleteLink(ctx, link.ID)
 			slog.Error("bulk set link tags failed", "error", err)
 			return nil, nil, fmt.Errorf("internal server error")
 		}

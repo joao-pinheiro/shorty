@@ -2280,6 +2280,9 @@ func TestLinkHandler_Create_SetTagsError(t *testing.T) {
 		SetLinkTagsFn: func(ctx context.Context, linkID int64, tagNames []string) error {
 			return fmt.Errorf("db error")
 		},
+		DeleteLinkFn: func(ctx context.Context, id int64) error {
+			return nil // cleanup orphaned link
+		},
 	}
 
 	h := NewLinkHandler(ms, testConfig())
