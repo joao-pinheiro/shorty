@@ -368,10 +368,7 @@ func (s *SQLiteStore) UpdateLink(ctx context.Context, id int64, isActive *bool, 
 		args = append(args, *expiresAt)
 	}
 
-	if len(setClauses) == 0 {
-		return s.getLinkByIDFromDB(ctx, s.writeDB, id)
-	}
-
+	// Always bump updated_at — even if no other fields changed (e.g. tags-only PATCH)
 	setClauses = append(setClauses, "updated_at = CURRENT_TIMESTAMP")
 
 	query := fmt.Sprintf(
@@ -486,12 +483,14 @@ func (s *SQLiteStore) CreateTag(ctx context.Context, name string) (*model.Tag, e
 	}
 	id, _ := res.LastInsertId()
 	var tag model.Tag
+	var createdAtStr string
 	err = s.writeDB.QueryRowContext(ctx,
 		`SELECT id, name, created_at FROM tags WHERE id = ?`, id).
-		Scan(&tag.ID, &tag.Name, &tag.CreatedAt)
+		Scan(&tag.ID, &tag.Name, &createdAtStr)
 	if err != nil {
 		return nil, err
 	}
+	tag.CreatedAt, _ = parseSQLiteTime(createdAtStr)
 	return &tag, nil
 }
 
@@ -509,9 +508,11 @@ func (s *SQLiteStore) ListTags(ctx context.Context) ([]model.TagWithCount, error
 	var tags []model.TagWithCount
 	for rows.Next() {
 		var t model.TagWithCount
-		if err := rows.Scan(&t.ID, &t.Name, &t.CreatedAt, &t.LinkCount); err != nil {
+		var createdAtStr string
+		if err := rows.Scan(&t.ID, &t.Name, &createdAtStr, &t.LinkCount); err != nil {
 			return nil, err
 		}
+		t.CreatedAt, _ = parseSQLiteTime(createdAtStr)
 		tags = append(tags, t)
 	}
 	return tags, rows.Err()
@@ -525,15 +526,17 @@ func (s *SQLiteStore) TagCount(ctx context.Context) (int, error) {
 
 func (s *SQLiteStore) GetTagByID(ctx context.Context, id int64) (*model.Tag, error) {
 	var tag model.Tag
+	var createdAtStr string
 	err := s.readDB.QueryRowContext(ctx,
 		`SELECT id, name, created_at FROM tags WHERE id = ?`, id).
-		Scan(&tag.ID, &tag.Name, &tag.CreatedAt)
+		Scan(&tag.ID, &tag.Name, &createdAtStr)
 	if err == sql.ErrNoRows {
 		return nil, ErrTagNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
+	tag.CreatedAt, _ = parseSQLiteTime(createdAtStr)
 	return &tag, nil
 }
 
